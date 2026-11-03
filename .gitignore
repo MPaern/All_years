@@ -2,3 +2,11 @@
 .Rhistory
 .RData
 .Ruserdata
+
+*.csv
+data/
+images/
+*.csv
+.positai
+/.quarto/
+/_site/
