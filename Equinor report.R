@@ -11,6 +11,7 @@ library(suntools)
 library(lubridate)
 library(readr)
 library(esquisse)
+library(mgcv)
 # library(MetBrewer)
 # library(purrr)
 # library(sp)
@@ -24,6 +25,31 @@ library(esquisse)
 cm25 <- read.csv("data/2025/cm_2025_night.csv")
 cm24 <- read.csv("data/2024/cm_2024_night.csv")
 cm26 <- read.csv("data/2026/cm_2026_night.csv")
+cmw <- read.csv("data/winter/cm_winter.csv")
+
+cmw <- cmw %>%
+  mutate(manual = id) %>%
+  separate_rows(manual, sep = "_")
+cmw <- cmw %>%
+  mutate(
+    datetime = as.POSIXct(
+      paste(DATE, TIME),
+      format = "%Y-%m-%d %H:%M:%S",
+      tz = "Etc/GMT+2"
+    ),
+    datetime_12 = as.POSIXct(
+      paste(DATE_12, TIME_12),
+      format = "%Y-%m-%d %H:%M:%S",
+      tz = "Etc/GMT+2"
+    )
+  )
+
+cm25$datetime <- as.POSIXct(cm25$datetime)
+cm24$datetime <- as.POSIXct(cm24$datetime)
+cm26$datetime <- as.POSIXct(cm26$datetime)
+
+cm24 <- rename(cm24, MATCH_RATIO = MATCH.RATIO)
+cm26 <- rename(cm26, MATCH_RATIO = MATCH.RATIO)
 
 ov25 <- read.csv("data/2025/overview_2025.csv")
 ov25$type[ov25$Site == "CM-01"] <- "coast"
@@ -275,4 +301,190 @@ ggplot(all_years, aes(DATE_plot, activity_min, color = year, fill = year)) +
   ggtitle("Nathusius' pipistrelle (Pipistrellus nathusii) activity") +
   theme_minimal()
 
+# NoID graph--------------------
+spp <- c("PIPNAT", "PIPPYG", "EPTNIL", "NoID", "MYODAU")
 
+make_daily <- function(dat, start, end) {
+  dat %>%
+    filter(autoid %in% spp,
+           autoid == "NoID" | MATCH_RATIO > 0.4) %>%
+    mutate(minute = floor_date(datetime, "minute"), DATE = as.Date(minute)) %>%
+    distinct(Site, autoid, minute, .keep_all = TRUE) %>%
+    count(DATE, autoid, name = "activity_min") %>%
+    complete(DATE = seq(as.Date(start), as.Date(end), by = "day"),
+             autoid = spp, fill = list(activity_min = 0))
+}
+
+# 2024
+
+daily24_spp <- make_daily(cm24, "2024-06-15", "2024-10-16")
+
+ggplot(daily24_spp, aes(DATE, activity_min, color = autoid, fill = autoid)) +
+  geom_point(size = 1.5, alpha = 0.3) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 10),
+             method.args = list(family = quasipoisson), alpha = 0.15) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+  ylab("Activity minutes across all sites 2024") +
+  xlab("") +
+  theme_minimal()
+
+# 2025
+
+daily25_spp <- make_daily(cm25, "2025-03-11", "2025-10-16")
+
+ggplot(daily25_spp, aes(DATE, activity_min, color = autoid, fill = autoid)) +
+  geom_point(size = 1.5, alpha = 0.3) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 10),
+              method.args = list(family = quasipoisson), alpha = 0.15) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+  ylab("Activity minutes across all sites 2025") +
+  xlab("") +
+  theme_minimal()
+
+# 2026
+
+daily26_spp <- make_daily(cm26, "2026-03-11", "2026-07-20")
+
+ggplot(daily26_spp, aes(DATE, activity_min, color = autoid, fill = autoid)) +
+  geom_point(size = 1.5, alpha = 0.3) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 10),
+              method.args = list(family = quasipoisson), alpha = 0.15) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") +
+  ylab("Activity minutes across all sites 2026") +
+  xlab("") +
+  theme_minimal()
+
+# activity minutes in 7 sites that were up all winter 2025/2026 from 2024-2026------------
+
+sites <- c("CM-03", "CM-04", "CM-05", "CM-06", "CM-17", "CM-23", "CM-56")
+start <- as.Date("2024-06-20")
+end   <- as.Date("2026-07-30")
+
+# automatic IDs (same confidence filter as before)
+auto <- bind_rows(
+  cm24 %>% mutate(Site = as.character(Site)),
+  cm25 %>% mutate(Site = as.character(Site)),
+  cm26 %>% mutate(Site = as.character(Site))
+) %>%
+  filter(autoid == "PIPNAT", MATCH_RATIO > 0.4) %>%
+  select(Site, datetime)
+
+# manual IDs
+man <- cmw %>%
+  mutate(Site = as.character(Site)) %>%
+  filter(manual == "PNAT") %>%     # adapt to how the column is coded
+  select(Site, datetime)
+
+act <- bind_rows(auto, man) %>%
+  filter(Site %in% sites) %>%
+  mutate(minute = floor_date(datetime, "minute")) %>%
+  distinct(Site, minute) %>%                 # also removes auto/manual duplicates
+  mutate(DATE = as.Date(minute)) %>%
+  filter(DATE >= start, DATE <= end) %>%
+  count(Site, DATE, name = "activity_min") %>%
+  complete(Site = sites,
+           DATE = seq(start, end, by = "day"),
+           fill = list(activity_min = 0)) %>%
+  mutate(Site = factor(Site),
+         day  = as.numeric(DATE - start))
+
+m2 <- gam(activity_min ~ s(day, k = 80) + s(Site, bs = "re"),
+          family = nb(), method = "REML", data = act)
+
+gam.check(m2)
+
+newd <- tibble(day = 0:as.numeric(end - start), Site = act$Site[1])
+pr <- predict(m2, newd, type = "link", se.fit = TRUE, exclude = "s(Site)")
+
+newd <- newd %>%
+  mutate(DATE = start + day,
+         fit = exp(pr$fit),
+         lwr = exp(pr$fit - 1.96 * pr$se.fit),
+         upr = exp(pr$fit + 1.96 * pr$se.fit))
+
+daily_mean <- act %>% group_by(DATE) %>% summarise(activity_min = mean(activity_min))
+
+ggplot() +
+  geom_point(data = daily_mean, aes(DATE, activity_min),
+             color = "cyan3", alpha = 0.4, size = 1.5) +
+  geom_ribbon(data = newd, aes(DATE, ymin = lwr, ymax = upr), alpha = 0.2) +
+  geom_line(data = newd, aes(DATE, fit), linewidth = 1) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %y") +
+  ylab("Activity minutes per site per day") +
+  xlab("") +
+  theme_minimal()
+
+ggplot() +
+  geom_point(data = daily_mean, aes(DATE, activity_min),
+             color = "cyan3", alpha = 0.4, size = 1.5) +
+  geom_ribbon(data = newd, aes(DATE, ymin = lwr, ymax = upr), alpha = 0.2) +
+  geom_line(data = newd, aes(DATE, fit), linewidth = 1) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %y") +
+  coord_cartesian(ylim = c(0, 20)) +
+  ylab("Activity minutes per site per day") +
+  xlab("") +
+  theme_minimal()
+
+# with autoid for cmw too
+
+keep <- function(d) {
+  d %>%
+    mutate(Site = as.character(Site)) %>%
+    select(Site, autoid, MATCH_RATIO, datetime)
+}
+
+auto1 <- bind_rows(keep(cm24), keep(cm25), keep(cm26), keep(cmw)) %>%
+  filter(autoid == "PIPNAT", MATCH_RATIO > 0.4) %>%
+  select(Site, datetime)
+
+act1 <- auto1 %>%
+  filter(Site %in% sites) %>%
+  mutate(minute = floor_date(datetime, "minute")) %>%
+  distinct(Site, minute) %>%
+  mutate(DATE = as.Date(minute)) %>%
+  filter(DATE >= start, DATE <= end) %>%
+  count(Site, DATE, name = "activity_min") %>%
+  complete(Site = sites,
+           DATE = seq(start, end, by = "day"),
+           fill = list(activity_min = 0)) %>%
+  mutate(Site = factor(Site),
+         day  = as.numeric(DATE - start))
+
+m21 <- gam(activity_min ~ s(day, k = 80) + s(Site, bs = "re"),
+          family = nb(), method = "REML", data = act1)
+
+gam.check(m21)
+
+newd1 <- tibble(day = 0:as.numeric(end - start), Site = act1$Site[1])
+pr1 <- predict(m21, newd1, type = "link", se.fit = TRUE, exclude = "s(Site)")
+
+newd1 <- newd1 %>%
+  mutate(DATE = start + day,
+         fit = exp(pr1$fit),
+         lwr = exp(pr1$fit - 1.96 * pr1$se.fit),
+         upr = exp(pr1$fit + 1.96 * pr1$se.fit))
+
+
+
+daily_mean1 <- act1 %>% group_by(DATE) %>% summarise(activity_min = mean(activity_min))
+
+ggplot() +
+  geom_point(data = daily_mean1, aes(DATE, activity_min),
+             color = "cyan3", alpha = 0.4, size = 1.5) +
+  geom_ribbon(data = newd1, aes(DATE, ymin = lwr, ymax = upr), alpha = 0.2) +
+  geom_line(data = newd1, aes(DATE, fit), linewidth = 1) +
+  scale_x_date(date_breaks = "2 months", date_labels = "%b %y") +
+  ylab("Activity minutes per site per day") +
+  xlab("") +
+  theme_minimal()
+
+# both:
+  
+both <- bind_rows(newd  %>% mutate(src = "autoid + manual (cmw)"),
+                  newd1 %>% mutate(src = "autoid only (cmw too)"))
+
+ggplot(both, aes(DATE, fit, color = src, fill = src)) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 1) +
+  coord_cartesian(ylim = c(0, 20)) +
+  theme_minimal()
