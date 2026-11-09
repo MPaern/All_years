@@ -32,21 +32,18 @@ cmw <- cmw %>%
   separate_rows(manual, sep = "_")
 cmw <- cmw %>%
   mutate(
-    datetime = as.POSIXct(
-      paste(DATE, TIME),
-      format = "%Y-%m-%d %H:%M:%S",
-      tz = "Etc/GMT+2"
-    ),
-    datetime_12 = as.POSIXct(
-      paste(DATE_12, TIME_12),
-      format = "%Y-%m-%d %H:%M:%S",
-      tz = "Etc/GMT+2"
-    )
+    datetime = as.POSIXct(paste(DATE, TIME),
+                          format = "%Y-%m-%d %H:%M:%S", tz = "Etc/GMT-2") %>%
+      with_tz("Europe/Oslo"),
+    datetime_12 = as.POSIXct(paste(DATE_12, TIME_12),
+                             format = "%Y-%m-%d %H:%M:%S", tz = "Etc/GMT-2") %>%
+      with_tz("Europe/Oslo")
   )
 
-cm25$datetime <- as.POSIXct(cm25$datetime)
-cm24$datetime <- as.POSIXct(cm24$datetime)
-cm26$datetime <- as.POSIXct(cm26$datetime)
+# datetime into Posixct, truncated = 3 makes midnight an actual time.
+cm25$datetime <- ymd_hms(cm25$datetime, tz = "Europe/Oslo", truncated = 3)
+cm24$datetime <- ymd_hms(cm24$datetime, tz = "Europe/Oslo", truncated = 3)
+cm26$datetime <- ymd_hms(cm26$datetime, tz = "Europe/Oslo", truncated = 3)
 
 cm24 <- rename(cm24, MATCH_RATIO = MATCH.RATIO)
 cm26 <- rename(cm26, MATCH_RATIO = MATCH.RATIO)
@@ -488,3 +485,200 @@ ggplot(both, aes(DATE, fit, color = src, fill = src)) +
   geom_line(linewidth = 1) +
   coord_cartesian(ylim = c(0, 20)) +
   theme_minimal()
+
+# winter----------------
+
+# sunset and sunrise times
+
+cmw$DATE <- as.Date(cmw$DATE)
+
+sun_input <- cmw %>%
+  distinct(Site, date = DATE) %>%
+  left_join(
+    ov25 %>% select(Site, latitude, longitude),
+    by = "Site"
+  )
+
+sun_times <- bind_cols(
+  sun_input %>% select(Site, DATE = date),
+  suncalc::getSunlightTimes(
+    data = sun_input %>%
+      transmute(date = date, lat = latitude, lon = longitude),
+    keep = c("sunrise", "sunset"),
+    tz = "Europe/Oslo"
+  ) %>%
+    select(sunrise, sunset)
+)
+
+cmw_sun <- cmw %>%
+  left_join(sun_times, by = c("Site", "DATE"))
+
+cmw_daytime <- cmw_sun %>%
+  filter(
+    !is.na(sunrise), !is.na(sunset),
+    datetime >= sunrise,
+    datetime <= sunset
+  )
+
+cmw_daytime$manual <- factor(cmw_daytime$manual)
+
+summary(cmw_daytime$manual)
+
+night_windows <- sun_times %>%
+  arrange(Site, DATE) %>%
+  group_by(Site) %>%
+  mutate(
+    next_sunrise = lead(sunrise)
+  ) %>%
+  ungroup() %>%
+  filter(
+    !is.na(sunset),
+    !is.na(next_sunrise)
+  ) %>%
+  transmute(
+    Site,
+    night_start = sunset - 3600,
+    night_end = next_sunrise + 3600
+  )
+
+cmw_night <- cmw %>%
+  inner_join(
+    night_windows,
+    by = "Site",
+    relationship = "many-to-many"
+  ) %>%
+  filter(
+    datetime >= night_start,
+    datetime <= night_end
+  ) %>%
+  select(-night_start, -night_end)
+
+cmw_night$manual <- factor(cmw_night$manual)
+cmw$manual <- factor(cmw$manual)
+
+summary(cmw_night$manual)
+summary(cmw$manual)
+
+# second try
+
+site_coords <- ov25 %>% distinct(Site, latitude, longitude)
+
+sun_grid <- cmw %>%
+  group_by(Site) %>%
+  summarise(first = min(DATE) - 1, last = max(DATE) + 1, .groups = "drop") %>%
+  rowwise() %>%
+  mutate(DATE = list(seq(first, last, by = "day"))) %>%
+  ungroup() %>%
+  select(-first, -last) %>%
+  unnest(DATE) %>%
+  left_join(site_coords, by = "Site")
+
+
+sun <- getSunlightTimes(
+  data = sun_grid %>% transmute(date = DATE, lat = latitude, lon = longitude),
+  keep = c("sunrise", "sunset"), tz = "Europe/Oslo"
+)
+
+sun_times <- bind_cols(sun_grid %>% select(Site, DATE),
+                       sun %>% select(sunrise, sunset))
+
+# night of date d = sunset(d) - 1h  to  sunrise(d+1) + 1h
+night_windows <- sun_times %>%
+  transmute(Site, night_date = DATE, night_start = sunset - 3600) %>%
+  left_join(sun_times %>% transmute(Site, night_date = DATE - 1,
+                                    night_end = sunrise + 3600),
+            by = c("Site", "night_date")) %>%
+  filter(!is.na(night_start), !is.na(night_end))
+
+cmw_night <- cmw %>%
+  inner_join(night_windows,
+             by = join_by(Site, between(datetime, night_start, night_end))) %>%
+  select(-night_start, -night_end)
+
+
+cmw_night$manual <- factor(cmw_night$manual)
+cmw$manual <- factor(cmw$manual)
+
+summary(cmw_night$manual)
+summary(cmw$manual)
+
+
+# files daytime
+
+ppyg_missing <- cmw %>%
+  filter(manual == "PPYG") %>%
+  anti_join(cmw_night, by = "filename") %>%
+  distinct(filename, .keep_all = TRUE)
+
+ppyg_missing %>% select(file, Site, datetime)
+
+# check if new nighttime dataset differs from the old one, cm is full, cm24 is old night
+
+cm <- read.csv("C:/Users/mapa/OneDrive - Norwegian University of Life Sciences/Documents/R for data/Overview of sites/cm_all.csv")
+
+site_coords24 <- ov24 %>% distinct(Site, latitude, longitude)
+
+cm$DATE <- as.Date(cm$DATE)
+
+sun_grid24 <- cm %>%
+  group_by(Site) %>%
+  summarise(first = min(DATE) - 1, last = max(DATE) + 1, .groups = "drop") %>%
+  rowwise() %>%
+  mutate(DATE = list(seq(first, last, by = "day"))) %>%
+  ungroup() %>%
+  select(-first, -last) %>%
+  unnest(DATE) %>%
+  left_join(site_coords24, by = "Site")
+
+
+sun24 <- getSunlightTimes(
+  data = sun_grid24 %>% transmute(date = DATE, lat = latitude, lon = longitude),
+  keep = c("sunrise", "sunset"), tz = "Europe/Oslo"
+)
+
+sun_times24 <- bind_cols(sun_grid24 %>% select(Site, DATE),
+                       sun24 %>% select(sunrise, sunset))
+
+# night of date d = sunset(d) - 1h  to  sunrise(d+1) + 1h
+night_windows24 <- sun_times24 %>%
+  transmute(Site, night_date = DATE, night_start = sunset - 3600) %>%
+  left_join(sun_times24 %>% transmute(Site, night_date = DATE - 1,
+                                    night_end = sunrise + 3600),
+            by = c("Site", "night_date")) %>%
+  filter(!is.na(night_start), !is.na(night_end))
+
+cm <- cm %>%
+  mutate(
+    datetime = as.POSIXct(
+      paste(DATE, TIME),
+      format = "%Y-%m-%d %H:%M:%S",
+      tz = "Europe/Oslo"))
+
+cm_night24 <- cm %>%
+  inner_join(night_windows24,
+             by = join_by(Site, between(datetime, night_start, night_end))) %>%
+  select(-night_start, -night_end)
+
+cm24_missing <- cm24 %>%
+  anti_join(cm_night24, by = "filename") %>%
+  distinct(filename, .keep_all = TRUE)
+
+cm24 %>%
+  count(filename) %>%
+  filter(n > 1) %>%
+  summarise(
+    duplicated_filenames = n(),
+    extra_rows = sum(n - 1)
+  )
+
+cm_night24 %>%
+  count(filename) %>%
+  filter(n > 1) %>%
+  summarise(
+    duplicated_filenames = n(),
+    extra_rows = sum(n - 1)
+  )
+
+n_distinct(cm24$filename)
+n_distinct(cm_night24$filename)
+n_distinct(cm24_missing$filename)
