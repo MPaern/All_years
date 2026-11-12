@@ -739,7 +739,7 @@ ggplot(
   labs(title = "Observed bats in CM-14 2025", x = "Date", y = "Species")
 
 
-## with big manual dataset----------
+## Big manual dataset----------
 
 big_all <- read.csv("data/CM_manualIDs_allavailable_subsets.csv")
 big_all[1] <- NULL
@@ -918,7 +918,7 @@ mysp_s$baseline
 summary(mysp_s$model)
 
 
-# check how many calls are lost with higher cutoffs
+## check how many calls are lost with higher cutoffs----------
 
 cutoff_cost <- function(res, cutoffs) {
   d         <- res$calls
@@ -945,3 +945,6 @@ cutoff_cost(ppyg_s, c(0.4, 0.48, 0.5, 0.55, 0.6, 0.61))
 cutoff_cost(pnat_s, c(0.45, 0.47, 0.5, 0.55, 0.6))
 
 cutoff_cost(mysp_s, c(0.3, 0.4, 0.45, 0.5))
+
+
+
