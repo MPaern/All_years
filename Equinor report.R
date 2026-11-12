@@ -666,14 +666,13 @@ n_distinct(cm24_missing$filename)
 
 
 # Finding out what should be match ratios based on manual data----------------
- # some code from Judith's MS thesis, but based on minutes for our sake
+ # some code from Judith's MS thesis, but based on minutes and improved
 
 ## Spring dataset -------------
 
 winter_all <- read.csv("data/winter/cm_winter_total.csv")
 
-winter_all <- winter_all %>%  #616981
-  separate_rows(id, sep = "_")
+str(winter_all)  #602554
 
 winter_all <- winter_all %>% 
   mutate(
@@ -692,12 +691,12 @@ winter_all <- winter_all %>%
                       id))
 
 spring_all <- winter_all %>%
-  filter(DATE > "2026-03-24") #99599
+  filter(DATE > "2026-03-24") #602554
 
 # choose
 
 winter <- winter_all %>%
-  mutate(across(c(autoid, id, Site), as.factor)) %>% 
+  mutate(across(c(autoid, Site), as.factor)) %>% 
   select(IN.FILE, filename, DURATION, 
                 DATE, TIME, HOUR,
                 DATE.12, TIME.12, HOUR.12,
@@ -705,7 +704,7 @@ winter <- winter_all %>%
                 ALTERNATE.2 , id, Site, datetime)
 
 spring <- spring_all %>% 
-  mutate(across(c(autoid, id, Site), as.factor)) %>% 
+  mutate(across(c(autoid, Site), as.factor)) %>% 
   select(IN.FILE, filename, DURATION, 
          DATE, TIME, HOUR,
          DATE.12, TIME.12, HOUR.12,
@@ -740,16 +739,42 @@ ggplot(
   labs(title = "Observed bats in CM-14 2025", x = "Date", y = "Species")
 
 
-## with big dataset----------
+## with big manual dataset----------
 
-big <- read.csv("data/CM_manualIDs_allavailable_subsets.csv")
+big_all <- read.csv("data/CM_manualIDs_allavailable_subsets.csv")
+big_all[1] <- NULL
 
+str(big_all) # 89556 obs
+
+# dataset already deconstructed, have to put together again, while keeping the MATCH.RATIO of the row that has it. 
+
+big <- big_all %>% # 70354 obs
+  group_by(filename) %>%
+  mutate(
+    id = paste(na.omit(manualid), collapse = "_")
+  ) %>%
+  ungroup() %>%
+  distinct(filename, .keep_all = TRUE) %>%
+  select(-manualid)
+
+# check if df seems ok
+
+str(big) 
 head(big)
+colSums(is.na(big))
+
+big %>%
+  filter(!autoid %in% c("NoID", "NOISE", "Noise")) %>%
+  summarise(
+    n_NA = sum(is.na(MATCH.RATIO)),
+    percentage_NA = mean(is.na(MATCH.RATIO)) * 100
+  )
+
+# 0 missing match ratios, we can proceed
 
 big  <- big %>%
-  mutate(id = manualid) %>%
   rename(Site = site) %>% 
-  separate_rows(id, sep = "_")
+  mutate(across(c(autoid, Site, newauto), as.factor))
 
 big <- big %>% 
   mutate(
@@ -760,23 +785,27 @@ big <- big %>%
     )
   )
 
-## code for activity minutes and probability function------------
+## function- code for activity minutes and probability------------
  # takes data, autoid id and manual id as values. 
 analyse_species <- function(data, autoid_code, id_code,
-                            target_probs  = c(0.5, 0.6, 0.7, 0.8, 0.9),
+                            target_probs  = c(0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9),
                             drop_blank_id = FALSE) {
   
   # --- 1. calls of this species, with 0/1 'correct' and the minute they fall in
-  d <- data %>% filter(autoid == autoid_code)
+  label <- paste(autoid_code, collapse = "+")
+  
+  d <- data %>% filter(autoid %in% autoid_code)          # was: autoid == autoid_code
   
   n_blank <- sum(is.na(d$id) | trimws(d$id) == "")
-  message(autoid_code, ": ", nrow(d), " calls, ", n_blank, " with blank manual id")
-  if (drop_blank_id) d <- d %>% filter(!is.na(id), trimws(id) != "")
+  message(label, ": ", nrow(d), " calls, ", n_blank, " with blank manual id")
   
   d <- d %>%
     mutate(MATCH.RATIO = as.numeric(MATCH.RATIO),
-           correct     = as.integer(id %in% id_code),   # blank/NA id counts as wrong
-           minute      = floor_date(datetime, "minute")) %>%
+           correct = as.integer(sapply(
+             strsplit(coalesce(as.character(id), ""), "_"),
+             function(x) any(x %in% id_code)
+           )),   # blank/NA id counts as wrong
+           minute      = floor_date(datetime, "minute")) %>% # rounds up to lower minute
     filter(!is.na(MATCH.RATIO))
   
   # --- 2. one row per site-minute (best match ratio, any correct call)
@@ -843,42 +872,76 @@ analyse_species <- function(data, autoid_code, id_code,
        model    = fit, minutes = m, calls = d)
 }
 
-## run different datasets--------
+## check different datasets--------
 
 pnat <- analyse_species(big, autoid_code = "PIPNAT", id_code = "PNAT")
 pnat$table
-pnat$baseline        # precision with no filter, to compare against
+pnat$baseline        
 summary(pnat$model)
 
-pnat <- analyse_species(spring, autoid_code = "PIPNAT", id_code = "PNAT")
-pnat$table
-pnat$baseline        # precision with no filter, to compare against
-summary(pnat$model)
+pnat_s <- analyse_species(spring, autoid_code = "PIPNAT", id_code = "PNAT")
+pnat_s$table
+pnat_s$baseline        
+summary(pnat_s$model)
 
-# check how many spring calls are lost
 
-res_spring <- analyse_species(spring, "PIPNAT", "PNAT")
-d  <- res_spring$calls
-c0 <- 0.83 #43%
-c0 <- 0.75 #32%
-c0 <- 0.686 #24%
-c0 <- 0.612 # 16%
-c0 <- 0.6 #14%
+enil <- analyse_species(big, autoid_code = "EPTNIL", id_code = "CNIL")
+enil$table
+enil$baseline        
+summary(enil$model)
 
-kept <- d %>% filter(MATCH.RATIO >= c0)
-total_min <- n_distinct(d$Site, d$minute)
+enil_s <- analyse_species(spring, autoid_code = "EPTNIL", id_code = "ENIL")
+enil_s$table
+enil_s$baseline        
+summary(enil_s$model)
 
-c(pct_minutes_lost = round(100 * (1 - n_distinct(kept$Site, kept$minute) / total_min), 1))
 
-res_big <- analyse_species(big, "PIPNAT", "PNAT")
-d  <- res_big$calls
-c0 <- 0.83 #17.8%
-c0 <- 0.75 #11.5%
-c0 <- 0.686 #9.1%
-c0 <- 0.6 #4.8%
+ppyg <- analyse_species(big, autoid_code = "PIPPYG", id_code = "PPYG")
+ppyg$table
+ppyg$baseline        
+summary(ppyg$model)
 
-kept <- d %>% filter(MATCH.RATIO >= c0)
-total_min <- n_distinct(d$Site, d$minute)
+ppyg_s <- analyse_species(spring, autoid_code = "PIPPYG", id_code = "PPYG")
+ppyg_s$table
+ppyg_s$baseline        
+summary(ppyg_s$model)
 
-c(pct_minutes_lost = round(100 * (1 - n_distinct(kept$Site, kept$minute) / total_min), 1))
 
+mysp <- analyse_species(big, autoid_code = c("MYODAU", "MYOMYS", "MYOBRA", "MYONAT"), id_code = c("MDAU", "MYSP"))
+mysp$table
+mysp$baseline       
+summary(mysp$model)
+
+mysp_s <- analyse_species(spring, autoid_code = c("MYODAU", "MYOMYS", "MYOBRA", "MYONAT"), id_code = c("MDAU", "MYSP"))
+mysp_s$table
+mysp_s$baseline     
+summary(mysp_s$model)
+
+
+# check how many calls are lost with higher cutoffs
+
+cutoff_cost <- function(res, cutoffs) {
+  d         <- res$calls
+  total_min <- res$baseline[["total_minutes"]]
+  true_min  <- res$baseline[["true_minutes"]]
+  
+  bind_rows(lapply(cutoffs, function(c) {
+    keep <- d$MATCH.RATIO >= c
+    ok   <- keep & d$correct == 1
+    ret  <- n_distinct(d$Site[keep], d$minute[keep])   # minutes with a call above the cut-off
+    cor  <- n_distinct(d$Site[ok],   d$minute[ok])     # ... of which a correct call is retained
+    tibble(cutoff           = c,
+           minutes_retained = ret,
+           pct_minutes_lost = round(100 * (1 - ret / total_min), 1),
+           precision        = round(cor / ret, 3),
+           recall           = round(cor / true_min, 3),
+           bias_pct         = round(100 * (ret / true_min - 1), 1))
+  }))
+}
+
+
+cutoff_cost(ppyg_s, c(0.4, 0.48, 0.5, 0.55, 0.6, 0.61))
+
+cutoff_cost(pnat_s, c(0.45, 0.47, 0.5, 0.55, 0.6))
+
+cutoff_cost(mysp_s, c(0.3, 0.4, 0.45, 0.5))
