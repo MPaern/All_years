@@ -333,7 +333,7 @@ ggplot(daily26_spp, aes(DATE, activity_min, color = autoid, fill = autoid)) +
   theme_minimal()
 
 # activity minutes in 7 sites that were up all winter 2025/2026 from 2024-2026------------
-
+# fix with removing double data
 sites <- c("CM-03", "CM-04", "CM-05", "CM-06", "CM-17", "CM-23", "CM-56")
 start <- as.Date("2024-06-20")
 end   <- as.Date("2026-07-30")
@@ -467,8 +467,8 @@ ggplot(both, aes(DATE, fit, color = src, fill = src)) +
   coord_cartesian(ylim = c(0, 20)) +
   theme_minimal()
 
-# winter----------------
-
+# winter--------------------
+# checking how many bats were out during daytime- 1 out outside of +-1 h window.
 # sunset and sunrise times
 
 cmw$DATE <- as.Date(cmw$DATE)
@@ -665,472 +665,55 @@ n_distinct(cm_night24$filename)
 n_distinct(cm24_missing$filename)
 
 
-# check for manual data----------------
+# Finding out what should be match ratios based on manual data----------------
+ # some code from Judith's MS thesis, but based on minutes for our sake
 
-winter <- read.csv("data/winter/cm_winter_total.csv")
-spring <- winter %>%
-  filter(DATE > "2026-03-24")
+## Spring dataset -------------
 
-spring <- spring %>%
+winter_all <- read.csv("data/winter/cm_winter_total.csv")
+
+winter_all <- winter_all %>%  #616981
   separate_rows(id, sep = "_")
 
-winter <- winter %>%
-  separate_rows(id, sep = "_")
-
-id_map <- c(PNAT = "PIPNAT",
-            PPYG = "PIPPYG",
-            ENIL = "EPTNIL",     
-            MDAU = "MYODAU",
-            VMUR = "VESMUR",
-            PAUR = "PLEAUR",
-            MYSP = "MYDAU",
-            NNOC = "NYCNOC")     
-
-winter <- winter %>%
-  mutate(id_clean = toupper(trimws(as.character(id))),
-         id_std   = coalesce(unname(id_map[id_clean]), id_clean))
-
-spring <- spring %>%
-  mutate(id_clean = toupper(trimws(as.character(id))),
-         id_std   = coalesce(unname(id_map[id_clean]), id_clean))
-
-table(spring$autoid, spring$id_std)
-
-table(winter$autoid, winter$id_std)
-
-table(winter$autoid, winter$id_std)   # a look at agreement and confusion
-
-sp <- "EPTNIL"
-d  <- winter %>% filter(!is.na(id_std))
-
-eval_thr <- function(mr, p) {
-  keep <- (d$autoid %in% sp) & (d$MATCH.RATIO >= mr) & (d$PULSES >= p)
-  keep[is.na(keep)] <- FALSE
-  tp <- sum(keep & d$id_std %in% sp)
-  fp <- sum(keep & !(d$id_std %in% sp))
-  fn <- sum(d$id_std %in% sp) - tp
-  tibble(mr, p, tp, fp, fn,
-         precision = tp / (tp + fp),
-         recall    = tp / (tp + fn),
-         f1        = 2 * tp / (2 * tp + fp + fn))
-}
-
-
-grid <- expand_grid(mr = seq(0, 1, 0.05), p = 1:20)
-res  <- bind_rows(purrr::pmap(grid, eval_thr))
-
-res %>% arrange(desc(f1)) %>% head(10)
-
-ggplot(res, aes(mr, p, fill = f1)) +
-  geom_tile() + scale_fill_viridis_c() + theme_minimal() +
-  labs(x = "min match ratio", y = "min pulses")
-
-res %>%
-  filter(p == 1) %>%
-  select(mr, tp, fp, precision, recall, f1) %>%
-  print(n = 25)
-
-res %>%
-  filter(p == 1) %>%
-  tidyr::pivot_longer(c(precision, recall, f1)) %>%
-  ggplot(aes(mr, value, color = name)) + geom_line() + theme_minimal()
-
-#Judith MS-----------
-#PPYG-------
-#Logistic regression to determine cut-off
-
-ppyg_data <- spring %>%
-  filter(autoid == "PIPPYG") %>%
-  mutate(
-    MATCH.RATIO = as.numeric(MATCH.RATIO),
-    correct = ifelse(id == "PPYG", 1, 0)) %>%
-  filter(!is.na(MATCH.RATIO))
-
-
-ppyg_glm <- glm(
-  correct ~ MATCH.RATIO,
-  family = binomial,
-  data = ppyg_data)
-
-summary(ppyg_glm)
-
-
-# calculates the match ratio cut-off by inverting the logistic regression
-get_cutoff <- function(p, model) {
-  beta0 <- coef(model)[1]
-  beta1 <- coef(model)[2]
-  (log(p / (1 - p)) - beta0) / beta1
-}
-
-# target probabilities for which we want to know the match ratio
-target_probs <- c(0.5, 0.6, 0.7, 0.8, 0.9)
-
-# create table with probability column and fill with values from get-cutoff + lost and retained calls + percentage
-loss_table <- data.frame(Probability = target_probs) %>%
-  mutate(
-    Cutoff_Ratio = pmin(
-      sapply(Probability, get_cutoff, model = ppyg_glm),
-      1),
-    Calls_retained = sapply(Cutoff_Ratio, function(c) 
-      sum(ppyg_data$MATCH.RATIO >= c)),
-    Calls_lost = sapply(Cutoff_Ratio, function(c) 
-      sum(ppyg_data$MATCH.RATIO < c)),
-    Percent_loss = round(
-      (Calls_lost / nrow(ppyg_data)) * 100, 2 ) )
-
-loss_table <- loss_table %>%
-  mutate(
-    Retained_correct = sapply(Cutoff_Ratio, function(c)
-      sum(ppyg_data$correct[ppyg_data$MATCH.RATIO >= c], na.rm = TRUE)),
-    Retained_false   = Calls_retained - Retained_correct,
-    Precision        = round(Retained_correct / Calls_retained, 3),
-    True_calls_lost  = sum(pnat_data$correct, na.rm = TRUE) - Retained_correct,
-    Recall           = round(Retained_correct / sum(pnat_data$correct, na.rm = TRUE), 3),
-  )
-
-print(loss_table)
-
-ggplot(loss_table, aes(Probability, Percent_loss)) +
-  geom_line(linewidth = 1, color = "steelblue") +
-  geom_point(aes(shape = Cutoff_Ratio >= 1), size = 3.5, color = "steelblue") +
-  geom_text(aes(label = paste0("≥ ", round(Cutoff_Ratio, 2))),
-            vjust = -1.1, size = 3.3) +
-  scale_x_continuous(labels = scales::percent) +        # if Probability is 0-1
-  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.12))) +
-  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 4),
-                     labels = c("reached", "capped at 1"),
-                     name = "Target") +
-  labs(x = "Target probability of a correct ID",
-       y = "Calls lost (%)",
-       subtitle = "Labels show the minimum match ratio required") +
-  theme_minimal()
-
-
-loss_table %>%
-  pivot_longer(c(Cutoff_Ratio, Percent_loss),
-               names_to = "metric", values_to = "value") %>%
-  mutate(metric = recode(metric,
-                         Cutoff_Ratio = "Required match ratio",
-                         Percent_loss = "Calls lost (%)")) %>%
-  ggplot(aes(Probability, value)) +
-  geom_line(color = "steelblue") +
-  geom_point(size = 3, color = "steelblue") +
-  facet_wrap(~ metric, ncol = 1, scales = "free_y", strip.position = "left") +
-  scale_x_continuous(labels = scales::percent) +
-  labs(x = "Target probability of a correct ID", y = NULL) +
-  theme_minimal() +
-  theme(strip.placement = "outside")
-
-loss_table %>%
-  pivot_longer(c(Calls_retained, Calls_lost), names_to = "status", values_to = "n") %>%
-  ggplot(aes(factor(Probability), n, fill = status)) +
-  geom_col() +
-  scale_fill_manual(values = c(Calls_retained = "steelblue", Calls_lost = "grey70"),
-                    labels = c("Lost", "Retained"), name = NULL) +
-  labs(x = "Target probability", y = "Calls") +
-  theme_minimal()
-
-
-# plot
-
-ppyg_data2 <- spring %>%
-  filter(autoid == "PIPPYG") %>%                 # KPRO's PPYG calls
-  mutate(correct = as.integer(id_std == "PIPPYG"))   # 1 = manual ID agrees
-
-ppyg_glm <- glm(correct ~ MATCH.RATIO, data = ppyg_data, family = binomial)
-
-ggplot(ppyg_data, aes(MATCH.RATIO, correct)) +
-  geom_point(alpha = 0.3) +
-  geom_smooth(method = "glm", method.args = list(family = binomial),
-              formula = y ~ x, se = FALSE, color = "blue") +
-  labs(title = "Comparing KPRO vs Manual ID for Soprano pipistrelles bats",
-       x = "KPRO match ratio",
-       y = "Predicted probability of correct") +
-  theme_minimal()
-
-#ENIL------
-#Logistic regression to determine cut-off,  
-
-
-enil_data <- spring %>%
-  filter(autoid == "EPTNIL") %>%
-  mutate(
-    MATCH.RATIO = as.numeric(MATCH.RATIO),
-    correct = ifelse(id == "ENIL", 1, 0)) %>%
-  filter(!is.na(MATCH.RATIO))
-
-
-enil_glm <- glm(
-  correct ~ MATCH.RATIO,
-  family = binomial,
-  data = enil_data)
-
-summary(enil_glm)
-
-
-# calculates the match ratio cut-off by inverting the logistic regression
-get_cutoff <- function(p, model) {
-  beta0 <- coef(model)[1]
-  beta1 <- coef(model)[2]
-  (log(p / (1 - p)) - beta0) / beta1
-}
-
-# target probabilities for which we want to know the match ratio
-target_probs <- c(0.5, 0.6, 0.7, 0.8, 0.9)
-
-# create table with probability column and fill with values from get-cutoff + lost and retained calls + percentage
-loss_table <- data.frame(Probability = target_probs) %>%
-  mutate(
-    Cutoff_Ratio = pmin(
-      sapply(Probability, get_cutoff, model = enil_glm),
-      1),
-    Calls_retained = sapply(Cutoff_Ratio, function(c) 
-      sum(enil_data$MATCH.RATIO >= c)),
-    Calls_lost = sapply(Cutoff_Ratio, function(c) 
-      sum(enil_data$MATCH.RATIO < c)),
-    Percent_loss = round(
-      (Calls_lost / nrow(enil_data)) * 100, 2 ) )
-
-enil_glm2 <- glm(correct ~ MATCH.RATIO + PULSES + MATCHING,
-                 family = binomial, data = enil_data)
-summary(enil_glm2)
-
-rng <- range(enil_data$MATCH.RATIO)
-
-loss_table <- data.frame(Probability = target_probs) %>%
-  mutate(
-    Cutoff_Ratio = sapply(Probability, get_cutoff, model = enil_glm),
-    Cutoff_Ratio = ifelse(Cutoff_Ratio >= rng[1] & Cutoff_Ratio <= rng[2],
-                          Cutoff_Ratio, NA)           # NA = target unreachable
-  )
-
-print(loss_table)
-
-ggplot(loss_table, aes(Probability, Percent_loss)) +
-  geom_line(linewidth = 1, color = "steelblue") +
-  geom_point(aes(shape = Cutoff_Ratio >= 1), size = 3.5, color = "steelblue") +
-  geom_text(aes(label = paste0("≥ ", round(Cutoff_Ratio, 2))),
-            vjust = -1.1, size = 3.3) +
-  scale_x_continuous(labels = scales::percent) +        # if Probability is 0-1
-  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.12))) +
-  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 4),
-                     labels = c("reached", "capped at 1"),
-                     name = "Target") +
-  labs(x = "Target probability of a correct ID",
-       y = "Calls lost (%)",
-       subtitle = "Labels show the minimum match ratio required") +
-  theme_minimal()
-
-
-loss_table %>%
-  pivot_longer(c(Cutoff_Ratio, Percent_loss),
-               names_to = "metric", values_to = "value") %>%
-  mutate(metric = recode(metric,
-                         Cutoff_Ratio = "Required match ratio",
-                         Percent_loss = "Calls lost (%)")) %>%
-  ggplot(aes(Probability, value)) +
-  geom_line(color = "steelblue") +
-  geom_point(size = 3, color = "steelblue") +
-  facet_wrap(~ metric, ncol = 1, scales = "free_y", strip.position = "left") +
-  scale_x_continuous(labels = scales::percent) +
-  labs(x = "Target probability of a correct ID", y = NULL) +
-  theme_minimal() +
-  theme(strip.placement = "outside")
-
-loss_table %>%
-  pivot_longer(c(Calls_retained, Calls_lost), names_to = "status", values_to = "n") %>%
-  ggplot(aes(factor(Probability), n, fill = status)) +
-  geom_col() +
-  scale_fill_manual(values = c(Calls_retained = "steelblue", Calls_lost = "grey70"),
-                    labels = c("Lost", "Retained"), name = NULL) +
-  labs(x = "Target probability", y = "Calls") +
-  theme_minimal()
-
-
-# plot
-
-ppyg_data2 <- spring %>%
-  filter(autoid == "PIPPYG") %>%                 # KPRO's PPYG calls
-  mutate(correct = as.integer(id_std == "PIPPYG"))   # 1 = manual ID agrees
-
-ppyg_glm <- glm(correct ~ MATCH.RATIO, data = ppyg_data, family = binomial)
-
-ggplot(ppyg_data, aes(MATCH.RATIO, correct)) +
-  geom_point(alpha = 0.3) +
-  geom_smooth(method = "glm", method.args = list(family = binomial),
-              formula = y ~ x, se = FALSE, color = "blue") +
-  labs(title = "Comparing KPRO vs Manual ID for Soprano pipistrelles bats",
-       x = "KPRO match ratio",
-       y = "Predicted probability of correct") +
-  theme_minimal()
-
-#PNAT-------
-#Logistic regression to determine cut-off
-
-pnat_data <- spring %>%
-  filter(autoid == "PIPNAT") %>%
-  mutate(
-    MATCH.RATIO = as.numeric(MATCH.RATIO),
-    correct = ifelse(id == "PNAT", 1, 0)) %>%
-  filter(!is.na(MATCH.RATIO))
-
-
-pnat_glm <- glm(
-  correct ~ MATCH.RATIO,
-  family = binomial,
-  data = pnat_data)
-
-summary(pnat_glm)
-
-
-# calculates the match ratio cut-off by inverting the logistic regression
-get_cutoff <- function(p, model) {
-  beta0 <- coef(model)[1]
-  beta1 <- coef(model)[2]
-  (log(p / (1 - p)) - beta0) / beta1
-}
-
-# target probabilities for which we want to know the match ratio
-target_probs <- c(0.5, 0.6, 0.7, 0.8, 0.9)
-
-# create table with probability column and fill with values from get-cutoff + lost and retained calls + percentage
-loss_table <- data.frame(Probability = target_probs) %>%
-  mutate(
-    Cutoff_Ratio = pmin(
-      sapply(Probability, get_cutoff, model = pnat_glm),
-      1),
-    Calls_retained = sapply(Cutoff_Ratio, function(c) 
-      sum(pnat_data$MATCH.RATIO >= c)),
-    Calls_lost = sapply(Cutoff_Ratio, function(c) 
-      sum(pnat_data$MATCH.RATIO < c)),
-    Percent_loss = round(
-      (Calls_lost / nrow(pnat_data)) * 100, 2 ) )
-
-print(loss_table)
-
-ggplot(loss_table, aes(Probability, Percent_loss)) +
-  geom_line(linewidth = 1, color = "steelblue") +
-  geom_point(aes(shape = Cutoff_Ratio >= 1), size = 3.5, color = "steelblue") +
-  geom_text(aes(label = paste0("≥ ", round(Cutoff_Ratio, 2))),
-            vjust = -1.1, size = 3.3) +
-  scale_x_continuous(labels = scales::percent) +        # if Probability is 0-1
-  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.12))) +
-  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 4),
-                     labels = c("reached", "capped at 1"),
-                     name = "Target") +
-  labs(x = "Target probability of a correct ID",
-       y = "Calls lost (%)",
-       subtitle = "Labels show the minimum match ratio required") +
-  theme_minimal()
-
-
-loss_table %>%
-  pivot_longer(c(Cutoff_Ratio, Percent_loss),
-               names_to = "metric", values_to = "value") %>%
-  mutate(metric = recode(metric,
-                         Cutoff_Ratio = "Required match ratio",
-                         Percent_loss = "Calls lost (%)")) %>%
-  ggplot(aes(Probability, value)) +
-  geom_line(color = "steelblue") +
-  geom_point(size = 3, color = "steelblue") +
-  facet_wrap(~ metric, ncol = 1, scales = "free_y", strip.position = "left") +
-  scale_x_continuous(labels = scales::percent) +
-  labs(x = "Target probability of a correct ID", y = NULL) +
-  theme_minimal() +
-  theme(strip.placement = "outside")
-
-loss_table %>%
-  pivot_longer(c(Calls_retained, Calls_lost), names_to = "status", values_to = "n") %>%
-  ggplot(aes(factor(Probability), n, fill = status)) +
-  geom_col() +
-  scale_fill_manual(values = c(Calls_retained = "steelblue", Calls_lost = "grey70"),
-                    labels = c("Lost", "Retained"), name = NULL) +
-  labs(x = "Target probability", y = "Calls") +
-  theme_minimal()
-
-
-# plot
-
-pnat_data2 <- spring %>%
-  filter(autoid == "PIPPYG") %>%                 # KPRO's PPYG calls
-  mutate(correct = as.integer(id_std == "PIPPYG"))   # 1 = manual ID agrees
-
-pnat_glm2 <- glm(correct ~ MATCH.RATIO, data = pnat_data, family = binomial)
-
-ggplot(pnat_data, aes(MATCH.RATIO, correct)) +
-  geom_point(alpha = 0.3) +
-  geom_smooth(method = "glm", method.args = list(family = binomial),
-              formula = y ~ x, se = FALSE, color = "blue") +
-  labs(title = "Comparing KPRO vs Manual ID for Soprano pipistrelles bats",
-       x = "KPRO match ratio",
-       y = "Predicted probability of correct") +
-  theme_minimal()
-summary(pnat_glm2)
-
-# false detections
-
-loss_table <- loss_table %>%
-  mutate(
-    Retained_correct = sapply(Cutoff_Ratio, function(c)
-      sum(pnat_data$correct[pnat_data$MATCH.RATIO >= c], na.rm = TRUE)),
-    Retained_false   = Calls_retained - Retained_correct,
-    Precision        = round(Retained_correct / Calls_retained, 3),
-    True_calls_lost  = sum(pnat_data$correct, na.rm = TRUE) - Retained_correct,
-    Recall           = round(Retained_correct / sum(pnat_data$correct, na.rm = TRUE), 3),
-  )
-
-loss_table %>% select(Probability, Cutoff_Ratio, Calls_retained,
-                      Retained_false, Precision, True_calls_lost, Recall, Percent_loss)
-
-Expected_precision = sapply(Cutoff_Ratio, function(c)
-  mean(predict(pnat_glm2,
-               newdata = pnat_data[pnat_data$MATCH.RATIO >= c, ],
-               type = "response")))
-# plots-------------
-
-winter <- winter %>% 
+winter_all <- winter_all %>% 
   mutate(
     datetime = as.POSIXct(
       paste(DATE, TIME),
-      format = "%Y-%m-%d %H:%M:%S",
-      tz = "Europe/Oslo"
-    )
-  )
-spring <- spring %>% 
-  mutate(
-    datetime = as.POSIXct(
-      paste(DATE, TIME),
-      format = "%Y-%m-%d %H:%M:%S",
+      format = "%d/%m/%Y %H:%M:%S",
       tz = "Europe/Oslo"
     )
   )
 
-winter$DATE <- as.Date(winter$DATE, format =  "%d/%m/%Y")
-winter <- winter %>%
+winter_all$DATE <- as.Date(winter_all$DATE, format =  "%d/%m/%Y")
+
+winter_all <- winter_all %>%
   mutate(id = if_else(DATE == "2026-01-05" & id == "ENIL",
                       "Noise",
                       id))
-spring$DATE <- as.Date(spring$DATE, format =  "%d/%m/%Y")
 
-ggplot(winter %>% filter(id %in% c("ENIL", "MDAU", "PPYG", "PNAT", "VMUR", "MYSP", "NNOC") ), aes(x = DATE, y = Site, color = id)) +
-  geom_point(size = 2) +
-  theme_minimal() +
-  scale_x_date() +
-  scale_y_discrete(expand = expansion(mult = c(0.01, 0.01)))+
-  labs(title = "Observed bats in the winter")
+spring_all <- winter_all %>%
+  filter(DATE > "2026-03-24") #99599
 
-ggplot(
-  spring %>% filter(id %in% c("PNAT")),
-  aes(x = datetime, y = Site, color = id)
-) +
-  geom_point(size = 2) +
-  theme_minimal() +
-  scale_x_datetime() +
-  scale_y_discrete(expand = expansion(mult = c(0.01, 0.01))) +
-  labs(title = "Observed bats in the spring", x = "Date")
+# choose
 
+winter <- winter_all %>%
+  mutate(across(c(autoid, id, Site), as.factor)) %>% 
+  select(IN.FILE, filename, DURATION, 
+                DATE, TIME, HOUR,
+                DATE.12, TIME.12, HOUR.12,
+                autoid, PULSES, MATCHING, MATCH.RATIO, ALTERNATE.1,
+                ALTERNATE.2 , id, Site, datetime)
 
-# Valerie data --------------
+spring <- spring_all %>% 
+  mutate(across(c(autoid, id, Site), as.factor)) %>% 
+  select(IN.FILE, filename, DURATION, 
+         DATE, TIME, HOUR,
+         DATE.12, TIME.12, HOUR.12,
+         autoid, PULSES, MATCHING, MATCH.RATIO, ALTERNATE.1,
+         ALTERNATE.2 , id, Site, datetime)
+  
+
+## Valerie data --------------
 
 cm14 <- read.csv("data/2025/id14.csv")
 
@@ -1156,253 +739,8 @@ ggplot(
   scale_y_discrete(expand = expansion(mult = c(0.01, 0.01))) +
   labs(title = "Observed bats in CM-14 2025", x = "Date", y = "Species")
 
-cm14 <- cm14 %>%
-  mutate(id = as.factor(id))
 
-summary(cm14$id)
-
-cm14 <- cm14 %>%
-  mutate(AUTO.ID. = as.factor(AUTO.ID.))
-
-summary(cm14$AUTO.ID.)
-
-#PPYG-------
-#Logistic regression to determine cut-off
-
-
-ppyg_data <- cm14 %>%
-  filter(AUTO.ID. == "PIPPYG") %>%
-  mutate(
-    MATCH.RATIO = as.numeric(MATCH.RATIO),
-    correct = ifelse(id == "PPYG", 1, 0)) %>%
-  filter(!is.na(MATCH.RATIO))%>%
-  filter(!is.na(id), trimws(id) != "")
-
-
-
-ppyg_glm <- glm(
-  correct ~ MATCH.RATIO,
-  family = binomial,
-  data = ppyg_data)
-
-summary(ppyg_glm)
-
-
-# calculates the match ratio cut-off by inverting the logistic regression
-get_cutoff <- function(p, model) {
-  beta0 <- coef(model)[1]
-  beta1 <- coef(model)[2]
-  (log(p / (1 - p)) - beta0) / beta1
-}
-
-# target probabilities for which we want to know the match ratio
-target_probs <- c(0.5, 0.6, 0.7, 0.8, 0.9)
-
-# create table with probability column and fill with values from get-cutoff + lost and retained calls + percentage
-loss_table <- data.frame(Probability = target_probs) %>%
-  mutate(
-    Cutoff_Ratio = pmin(
-      sapply(Probability, get_cutoff, model = ppyg_glm),
-      1),
-    Calls_retained = sapply(Cutoff_Ratio, function(c) 
-      sum(ppyg_data$MATCH.RATIO >= c)),
-    Calls_lost = sapply(Cutoff_Ratio, function(c) 
-      sum(ppyg_data$MATCH.RATIO < c)),
-    Percent_loss = round(
-      (Calls_lost / nrow(ppyg_data)) * 100, 2 ) )
-
-loss_table <- loss_table %>%
-  mutate(
-    Retained_correct = sapply(Cutoff_Ratio, function(c)
-      sum(ppyg_data$correct[ppyg_data$MATCH.RATIO >= c], na.rm = TRUE)),
-    Retained_false   = Calls_retained - Retained_correct,
-    Precision        = round(Retained_correct / Calls_retained, 3),
-    True_calls_lost  = sum(ppyg_data$correct, na.rm = TRUE) - Retained_correct,
-    Recall           = round(Retained_correct / sum(ppyg_data$correct, na.rm = TRUE), 3),
-  )
-
-print(loss_table)
-
-
-# Pnat
-
-pnat_data <- cm14 %>%
-  filter(AUTO.ID. == "PIPNAT", !is.na(id)) %>%
-  mutate(
-    MATCH.RATIO = as.numeric(MATCH.RATIO),
-    correct = ifelse(id == "PNAT", 1, 0)) %>%
-  filter(!is.na(MATCH.RATIO))%>%
-  filter(!is.na(id), trimws(id) != "")
-
-
-pnat_glm <- glm(
-  correct ~ MATCH.RATIO,
-  family = binomial,
-  data = pnat_data)
-
-summary(pnat_glm)
-
-# create table with probability column and fill with values from get-cutoff + lost and retained calls + percentage
-loss_table <- data.frame(Probability = target_probs) %>%
-  mutate(
-    Cutoff_Ratio = pmin(
-      sapply(Probability, get_cutoff, model = pnat_glm),
-      1),
-    Calls_retained = sapply(Cutoff_Ratio, function(c) 
-      sum(pnat_data$MATCH.RATIO >= c)),
-    Calls_lost = sapply(Cutoff_Ratio, function(c) 
-      sum(pnat_data$MATCH.RATIO < c)),
-    Percent_loss = round(
-      (Calls_lost / nrow(pnat_data)) * 100, 2 ) )
-
-loss_table <- loss_table %>%
-  mutate(
-    Retained_correct = sapply(Cutoff_Ratio, function(c)
-      sum(pnat_data$correct[pnat_data$MATCH.RATIO >= c], na.rm = TRUE)),
-    Retained_false   = Calls_retained - Retained_correct,
-    Precision        = round(Retained_correct / Calls_retained, 3),
-    True_calls_lost  = sum(pnat_data$correct, na.rm = TRUE) - Retained_correct,
-    Recall           = round(Retained_correct / sum(pnat_data$correct, na.rm = TRUE), 3),
-  )
-
-print(loss_table)
-
-# Enil
-
-enil_data <- spring %>%
-  filter(autoid == "PIPNAT", !is.na(id)) %>%
-  mutate(
-    MATCH.RATIO = as.numeric(MATCH.RATIO),
-    correct = ifelse(id == "PNAT", 1, 0)) %>%
-  filter(!is.na(MATCH.RATIO))
-
-
-pnat_glm <- glm(
-  correct ~ MATCH.RATIO,
-  family = binomial,
-  data = pnat_data)
-
-summary(pnat_glm)
-
-# create table with probability column and fill with values from get-cutoff + lost and retained calls + percentage
-loss_table <- data.frame(Probability = target_probs) %>%
-  mutate(
-    Cutoff_Ratio = pmin(
-      sapply(Probability, get_cutoff, model = pnat_glm),
-      1),
-    Calls_retained = sapply(Cutoff_Ratio, function(c) 
-      sum(pnat_data$MATCH.RATIO >= c)),
-    Calls_lost = sapply(Cutoff_Ratio, function(c) 
-      sum(pnat_data$MATCH.RATIO < c)),
-    Percent_loss = round(
-      (Calls_lost / nrow(pnat_data)) * 100, 2 ) )
-
-loss_table <- loss_table %>%
-  mutate(
-    Retained_correct = sapply(Cutoff_Ratio, function(c)
-      sum(pnat_data$correct[pnat_data$MATCH.RATIO >= c], na.rm = TRUE)),
-    Retained_false   = Calls_retained - Retained_correct,
-    Precision        = round(Retained_correct / Calls_retained, 3),
-    True_calls_lost  = sum(pnat_data$correct, na.rm = TRUE) - Retained_correct,
-    Recall           = round(Retained_correct / sum(pnat_data$correct, na.rm = TRUE), 3),
-  )
-
-print(loss_table)
-
-# pnat activity minutes------------
-
-pnat_data <- spring %>%
-  filter(autoid == "PIPNAT") %>%
-  mutate(
-    MATCH.RATIO = as.numeric(MATCH.RATIO),
-    correct = ifelse(id == "PNAT", 1, 0)) %>%
-  filter(!is.na(MATCH.RATIO))
-
-pnat_min <- pnat_data %>%
-  mutate(minute = floor_date(datetime, "minute"))      # use your datetime column
-
-manutotal_min <- n_distinct(pnat_min$Site, pnat_min$minute)
-true_min  <- pnat_min %>% filter(correct == 1) %>%
-  distinct(Site, minute) %>% nrow()
-
-minute_stats <- function(c) {
-  kept <- pnat_min %>% filter(MATCH.RATIO >= c)
-  tibble(
-    Minutes_retained         = n_distinct(kept$Site, kept$minute),
-    Minutes_retained_correct = kept %>% filter(correct == 1) %>%
-      distinct(Site, minute) %>% nrow()
-  )
-}
-
-pnat_glm <- glm(
-  correct ~ MATCH.RATIO,
-  family = binomial,
-  data = pnat_data)
-
-loss_table <- data.frame(Probability = target_probs) %>%
-  mutate(
-    Cutoff_Ratio = pmin(
-      sapply(Probability, get_cutoff, model = pnat_glm),
-      1),
-    Calls_retained = sapply(Cutoff_Ratio, function(c) 
-      sum(pnat_data$MATCH.RATIO >= c)),
-    Calls_lost = sapply(Cutoff_Ratio, function(c) 
-      sum(pnat_data$MATCH.RATIO < c)),
-    Percent_loss = round(
-      (Calls_lost / nrow(pnat_data)) * 100, 2 ) )
-
-loss_table <- loss_table %>%
-  mutate(
-    Retained_correct = sapply(Cutoff_Ratio, function(c)
-      sum(pnat_data$correct[pnat_data$MATCH.RATIO >= c], na.rm = TRUE)),
-    Retained_false   = Calls_retained - Retained_correct,
-    Precision        = round(Retained_correct / Calls_retained, 3),
-    True_calls_lost  = sum(pnat_data$correct, na.rm = TRUE) - Retained_correct,
-    Recall           = round(Retained_correct / sum(pnat_data$correct, na.rm = TRUE), 3),
-  )
-
-
-loss_table_min <- loss_table %>%
-  select(Probability, Cutoff_Ratio) %>%
-  mutate(stats = lapply(Cutoff_Ratio, minute_stats)) %>%
-  unnest(stats) %>%
-  mutate(
-    Minutes_lost           = total_min - Minutes_retained,
-    Percent_loss           = round(Minutes_lost / total_min * 100, 2),
-    Minutes_retained_false = Minutes_retained - Minutes_retained_correct,
-    Precision              = round(Minutes_retained_correct / Minutes_retained, 3),
-    True_minutes_lost      = true_min - Minutes_retained_correct,
-    Recall                 = round(Minutes_retained_correct / true_min, 3)
-  )
-
-loss_table_min %>% select(Probability, Cutoff_Ratio, Minutes_retained,
-                          Minutes_retained_false, Precision,
-                          True_minutes_lost, Recall, Percent_loss)
-
-pnat_minlevel <- pnat_min %>%
-  group_by(Site, minute) %>%
-  summarise(MATCH.RATIO = max(MATCH.RATIO), correct = max(correct), .groups = "drop")
-
-pnat_glm_min <- glm(correct ~ MATCH.RATIO, family = binomial, data = pnat_minlevel)
-summary(pnat_glm_min)
-
-c0 <- 0.86
-c0 <- 0.75
-c0 <- 0.66
-
-minute_stats(c0) %>%
-  mutate(
-    Minutes_lost           = total_min - Minutes_retained,
-    Percent_loss           = round(Minutes_lost / total_min * 100, 2),
-    Minutes_retained_false = Minutes_retained - Minutes_retained_correct,
-    Precision              = round(Minutes_retained_correct / Minutes_retained, 3),
-    True_minutes_lost      = true_min - Minutes_retained_correct,
-    Recall                 = round(Minutes_retained_correct / true_min, 3)
-  )
-
-sum(pnat_data$id == "PNAT", na.rm = TRUE)
-
-# with big dataset
+## with big dataset----------
 
 big <- read.csv("data/CM_manualIDs_allavailable_subsets.csv")
 
@@ -1410,6 +748,7 @@ head(big)
 
 big  <- big %>%
   mutate(id = manualid) %>%
+  rename(Site = site) %>% 
   separate_rows(id, sep = "_")
 
 big <- big %>% 
@@ -1421,115 +760,125 @@ big <- big %>%
     )
   )
 
-pnat_data <- big %>% # from here--------------------------------
-  filter(autoid == "PIPNAT") %>%
-  mutate(
-    MATCH.RATIO = as.numeric(MATCH.RATIO),
-    correct = ifelse(id == "PNAT", 1, 0)) %>%
-  filter(!is.na(MATCH.RATIO))
-
-pnat_min <- pnat_data %>%
-  mutate(minute = floor_date(datetime, "minute"))      # use your datetime column
-
-total_min <- n_distinct(pnat_min$site, pnat_min$minute)
-true_min  <- pnat_min %>% filter(correct == 1) %>%
-  distinct(site, minute) %>% nrow()
-
-minute_stats <- function(c) {
-  kept <- pnat_min %>% filter(MATCH.RATIO >= c)
-  tibble(
-    Minutes_retained         = n_distinct(kept$site, kept$minute),
-    Minutes_retained_correct = kept %>% filter(correct == 1) %>%
-      distinct(site, minute) %>% nrow()
-  )
+## code for activity minutes and probability function------------
+ # takes data, autoid id and manual id as values. 
+analyse_species <- function(data, autoid_code, id_code,
+                            target_probs  = c(0.5, 0.6, 0.7, 0.8, 0.9),
+                            drop_blank_id = FALSE) {
+  
+  # --- 1. calls of this species, with 0/1 'correct' and the minute they fall in
+  d <- data %>% filter(autoid == autoid_code)
+  
+  n_blank <- sum(is.na(d$id) | trimws(d$id) == "")
+  message(autoid_code, ": ", nrow(d), " calls, ", n_blank, " with blank manual id")
+  if (drop_blank_id) d <- d %>% filter(!is.na(id), trimws(id) != "")
+  
+  d <- d %>%
+    mutate(MATCH.RATIO = as.numeric(MATCH.RATIO),
+           correct     = as.integer(id %in% id_code),   # blank/NA id counts as wrong
+           minute      = floor_date(datetime, "minute")) %>%
+    filter(!is.na(MATCH.RATIO))
+  
+  # --- 2. one row per site-minute (best match ratio, any correct call)
+  m <- d %>%
+    group_by(Site, minute) %>%
+    summarise(MATCH.RATIO = max(MATCH.RATIO), correct = max(correct), .groups = "drop")
+  
+  # --- 3. minute-level logistic model (only if there is something to model)
+  can_fit <- n_distinct(m$correct) == 2 && n_distinct(m$MATCH.RATIO) > 1
+  fit     <- if (can_fit) glm(correct ~ MATCH.RATIO, family = binomial, data = m) else NULL
+  
+  informative <- FALSE
+  b <- c(NA_real_, NA_real_)
+  if (can_fit) {
+    cf <- summary(fit)$coefficients
+    if ("MATCH.RATIO" %in% rownames(cf)) {
+      b <- unname(coef(fit))
+      informative <- isTRUE(b[2] > 0 && cf["MATCH.RATIO", "Pr(>|z|)"] < 0.05)
+    }
+  }
+  if (!informative)
+    warning(autoid_code, ": match ratio does not predict correct IDs in this data ",
+            "(no variation, no slope, or slope not positive and significant); no cut-offs given.")
+  rng <- range(m$MATCH.RATIO)
+  
+  # --- 4. counts in activity minutes at a given cut-off
+  total_min <- n_distinct(d$Site, d$minute)
+  true_min  <- d %>% filter(correct == 1) %>% distinct(Site, minute) %>% nrow()
+  
+  minute_stats <- function(c) {
+    if (is.na(c)) return(tibble(Minutes_retained = NA_integer_,
+                                Minutes_retained_correct = NA_integer_))
+    kept <- d %>% filter(MATCH.RATIO >= c)
+    tibble(Minutes_retained = n_distinct(kept$Site, kept$minute),
+           Minutes_retained_correct = kept %>% filter(correct == 1) %>%
+             distinct(Site, minute) %>% nrow())
+  }
+  
+  # --- 5. cut-off table
+  tab <- tibble(Probability = target_probs) %>%
+    mutate(
+      Raw_cutoff   = if (informative) (qlogis(Probability) - b[1]) / b[2] else NA_real_,
+      Cutoff_Ratio = case_when(is.na(Raw_cutoff)    ~ NA_real_,
+                               Raw_cutoff < rng[1]  ~ rng[1],
+                               Raw_cutoff > rng[2]  ~ NA_real_,
+                               TRUE ~ Raw_cutoff),
+      stats = lapply(Cutoff_Ratio, minute_stats)
+    ) %>%
+    unnest(stats) %>%
+    mutate(
+      Minutes_lost           = total_min - Minutes_retained,
+      Percent_loss           = round(Minutes_lost / total_min * 100, 2),
+      Minutes_retained_false = Minutes_retained - Minutes_retained_correct,
+      Precision              = round(Minutes_retained_correct / Minutes_retained, 3),
+      True_minutes_lost      = true_min - Minutes_retained_correct,
+      Recall                 = round(Minutes_retained_correct / true_min, 3)
+    ) %>%
+    select(Probability, Cutoff_Ratio, Minutes_retained, Minutes_retained_false,
+           Precision, True_minutes_lost, Recall, Percent_loss)
+  
+  list(table    = tab,
+       baseline = c(total_minutes = total_min, true_minutes = true_min,
+                    precision_no_filter = round(true_min / total_min, 3)),
+       model    = fit, minutes = m, calls = d)
 }
 
-pnat_glm <- glm(
-  correct ~ MATCH.RATIO,
-  family = binomial,
-  data = pnat_data)
+## run different datasets--------
 
-loss_table <- data.frame(Probability = target_probs) %>%
-  mutate(
-    Cutoff_Ratio = pmin(
-      sapply(Probability, get_cutoff, model = pnat_glm),
-      1),
-    Calls_retained = sapply(Cutoff_Ratio, function(c) 
-      sum(pnat_data$MATCH.RATIO >= c)),
-    Calls_lost = sapply(Cutoff_Ratio, function(c) 
-      sum(pnat_data$MATCH.RATIO < c)),
-    Percent_loss = round(
-      (Calls_lost / nrow(pnat_data)) * 100, 2 ) )
+pnat <- analyse_species(big, autoid_code = "PIPNAT", id_code = "PNAT")
+pnat$table
+pnat$baseline        # precision with no filter, to compare against
+summary(pnat$model)
 
-loss_table <- loss_table %>%
-  mutate(
-    Retained_correct = sapply(Cutoff_Ratio, function(c)
-      sum(pnat_data$correct[pnat_data$MATCH.RATIO >= c], na.rm = TRUE)),
-    Retained_false   = Calls_retained - Retained_correct,
-    Precision        = round(Retained_correct / Calls_retained, 3),
-    True_calls_lost  = sum(pnat_data$correct, na.rm = TRUE) - Retained_correct,
-    Recall           = round(Retained_correct / sum(pnat_data$correct, na.rm = TRUE), 3),
-  )
+pnat <- analyse_species(spring, autoid_code = "PIPNAT", id_code = "PNAT")
+pnat$table
+pnat$baseline        # precision with no filter, to compare against
+summary(pnat$model)
 
+# check how many spring calls are lost
 
-loss_table_min <- loss_table %>%
-  select(Probability, Cutoff_Ratio) %>%
-  mutate(stats = lapply(Cutoff_Ratio, minute_stats)) %>%
-  unnest(stats) %>%
-  mutate(
-    Minutes_lost           = total_min - Minutes_retained,
-    Percent_loss           = round(Minutes_lost / total_min * 100, 2),
-    Minutes_retained_false = Minutes_retained - Minutes_retained_correct,
-    Precision              = round(Minutes_retained_correct / Minutes_retained, 3),
-    True_minutes_lost      = true_min - Minutes_retained_correct,
-    Recall                 = round(Minutes_retained_correct / true_min, 3)
-  )
+res_spring <- analyse_species(spring, "PIPNAT", "PNAT")
+d  <- res_spring$calls
+c0 <- 0.83 #43%
+c0 <- 0.75 #32%
+c0 <- 0.686 #24%
+c0 <- 0.612 # 16%
+c0 <- 0.6 #14%
 
-loss_table_min %>% select(Probability, Cutoff_Ratio, Minutes_retained,
-                          Minutes_retained_false, Precision,
-                          True_minutes_lost, Recall, Percent_loss)
+kept <- d %>% filter(MATCH.RATIO >= c0)
+total_min <- n_distinct(d$Site, d$minute)
 
-pnat_minlevel <- pnat_min %>%
-  group_by(site, minute) %>%
-  summarise(MATCH.RATIO = max(MATCH.RATIO), correct = max(correct), .groups = "drop")
+c(pct_minutes_lost = round(100 * (1 - n_distinct(kept$Site, kept$minute) / total_min), 1))
 
-pnat_glm_min <- glm(correct ~ MATCH.RATIO, family = binomial, data = pnat_minlevel)
-summary(pnat_glm_min)
+res_big <- analyse_species(big, "PIPNAT", "PNAT")
+d  <- res_big$calls
+c0 <- 0.83 #17.8%
+c0 <- 0.75 #11.5%
+c0 <- 0.686 #9.1%
+c0 <- 0.6 #4.8%
 
-cutoff_table <- tibble(Cutoff_Ratio = c(0.65, 0.75, 0.86)) %>%
-  mutate(stats = lapply(Cutoff_Ratio, minute_stats)) %>%
-  unnest(stats) %>%
-  mutate(
-    Minutes_lost           = total_min - Minutes_retained,
-    Percent_loss           = round(Minutes_lost / total_min * 100, 2),
-    Minutes_retained_false = Minutes_retained - Minutes_retained_correct,
-    Precision              = round(Minutes_retained_correct / Minutes_retained, 3),
-    True_minutes_lost      = true_min - Minutes_retained_correct,
-    Recall                 = round(Minutes_retained_correct / true_min, 3)
-  )
+kept <- d %>% filter(MATCH.RATIO >= c0)
+total_min <- n_distinct(d$Site, d$minute)
 
-cutoff_table %>%
-  select(Cutoff_Ratio, Minutes_retained, Minutes_retained_false, Precision,
-         True_minutes_lost, Recall, Percent_loss)
+c(pct_minutes_lost = round(100 * (1 - n_distinct(kept$Site, kept$minute) / total_min), 1))
 
-
-rng <- range(pnat_minlevel$MATCH.RATIO)
-
-loss_table_min <- data.frame(Probability = target_probs) %>%
-  mutate(
-    Raw_cutoff   = sapply(Probability, get_cutoff, model = pnat_glm_min),
-    Cutoff_Ratio = case_when(Raw_cutoff < rng[1] ~ rng[1],
-                             Raw_cutoff > rng[2] ~ NA_real_,
-                             TRUE ~ Raw_cutoff),
-    stats        = lapply(Cutoff_Ratio, minute_stats)
-  ) %>%
-  unnest(stats) %>%
-  mutate(
-    Minutes_lost           = total_min - Minutes_retained,
-    Percent_loss           = round(Minutes_lost / total_min * 100, 2),
-    Minutes_retained_false = Minutes_retained - Minutes_retained_correct,
-    Precision              = round(Minutes_retained_correct / Minutes_retained, 3),
-    True_minutes_lost      = true_min - Minutes_retained_correct,
-    Recall                 = round(Minutes_retained_correct / true_min, 3)
-  ) %>%
-  select(-Raw_cutoff)
