@@ -42,8 +42,8 @@ cm25$datetime <- ymd_hms(cm25$datetime, tz = "Europe/Oslo", truncated = 3)
 cm24$datetime <- ymd_hms(cm24$datetime, tz = "Europe/Oslo", truncated = 3)
 cm26$datetime <- ymd_hms(cm26$datetime, tz = "Europe/Oslo", truncated = 3)
 
-cm24 <- rename(cm24, MATCH_RATIO = MATCH.RATIO)
-cm26 <- rename(cm26, MATCH_RATIO = MATCH.RATIO)
+cm24 <- cm24 %>% rename(MATCH.RATIO = MATCH_RATIO)
+cm26 <- cm26 %>% rename(MATCH.RATIO = MATCH_RATIO)
 
 ov25 <- read.csv("data/2025/overview_2025.csv")
 ov25$type[ov25$Site == "CM-01"] <- "coast"
@@ -81,6 +81,7 @@ pnat.plot.25
 # match ratio 0.5 does not change it so much, most matches fall above that line
 
 
+
 # activity minutes
 
 pnat25_min <- pnat25 %>%
@@ -100,8 +101,60 @@ pnat.plot.25.min <- ggplot(pnat25_min, aes(x = DATE)) +
 
 pnat.plot.25.min
 
-# smooth plot
+pnat25_min_6 <- pnat25 %>%
+  filter(MATCH_RATIO > 0.6) %>%
+  mutate(minute = floor_date(datetime, "minute"),
+         DATE   = as.Date(minute)) %>%
+  distinct(Site, minute, .keep_all = TRUE)   # one row per site-minute
 
+
+pnat.plot.25.min.6 <- ggplot(pnat25_min_6, aes(x = DATE)) + 
+  stat_count(geom = "point", color = "cyan3", size = 4) +
+  scale_x_date(limits = as.Date(c("2025-03-11", "2025-10-16"))) + 
+  ylab("Activity minutes across all sites 2025") + 
+  xlab("") + 
+  ggtitle("Nathusius' pipistrelle (Pipistrellus nathusii) activity 2025") + 
+  theme_minimal()
+
+pnat.plot.25.min.6
+
+# new plot
+
+
+# threshold > 0.5
+pnat_0.5 <- pnat25 %>%
+  filter(MATCH_RATIO > 0.5) %>%
+  mutate(minute = floor_date(datetime, "minute"), DATE = as.Date(minute)) %>%
+  distinct(Site, minute, .keep_all = TRUE) %>%
+  count(DATE, name = "activity_minutes") %>%
+  mutate(threshold = "Threshold > 0.5")   
+
+# threshold > 0.6
+pnat_0.6 <- pnat25 %>%
+  filter(MATCH_RATIO > 0.6) %>%
+  mutate(minute = floor_date(datetime, "minute"), DATE = as.Date(minute)) %>%
+  distinct(Site, minute, .keep_all = TRUE) %>%
+  count(DATE, name = "activity_minutes") %>%
+  mutate(threshold = "Threshold > 0.6") 
+
+# combine
+pnat_combined <- bind_rows(pnat_0.5, pnat_0.6)
+
+ggplot(pnat_combined, aes(x = DATE, y = activity_minutes, color = threshold, fill = threshold)) +
+  geom_point(alpha = 0.3, size = 1) +
+  geom_smooth(method = "loess", se = TRUE, linewidth = 1.2, span = 0.3) +
+  scale_x_date(limits = as.Date(c("2025-03-11", "2025-10-16"))) +
+  scale_color_manual(values = c("Threshold > 0.5" = "cyan3", "Threshold > 0.6" = "orange2")) +
+  scale_fill_manual(values = c("Threshold > 0.5" = "cyan3", "Threshold > 0.6" = "orange2")) +
+  ylab("Activity minutes across all sites") +
+  xlab("") +
+  ggtitle("Nathusius' pipistrelle activity 2025",
+          subtitle = "Comparing match ratio 0.5 and 0.6") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+
+# smooth plot
 
 daily25 <- pnat25_min %>%
   count(DATE, name = "activity_min") %>%
@@ -126,6 +179,8 @@ ggplot(daily25, aes(DATE, activity_min)) +
   xlab("") +
   ggtitle("Nathusius' pipistrelle (Pipistrellus nathusii) activity 2025") +
   theme_minimal()
+
+
 
 # 2024 ----------------------------------------------
 
@@ -258,6 +313,74 @@ ggplot(daily26, aes(DATE, activity_min)) +
   xlab("") +
   ggtitle("Nathusius' pipistrelle (Pipistrellus nathusii) activity 2026") +
   theme_minimal()
+
+## with spring data, compare 6 sites---------------
+
+
+pnat26_clean <- pnat26 %>%
+  mutate(
+    Site = as.character(Site),
+    autoid = as.character(autoid)
+  )
+
+spring_clean <- spring %>%
+  separate_rows(id, sep = "_") %>% 
+  filter(
+    id == "PNAT"
+  ) %>% 
+  mutate(
+    Site = as.character(Site),
+    autoid = as.character(autoid)
+  )
+
+# combine
+combined_pnat2026 <- bind_rows(pnat26_clean, spring_clean)
+
+# Check the structure of the combined data frame
+str(combined_pnat2026)
+
+combined_pnat2026 <- combined_pnat2026 %>%
+  distinct(filename, .keep_all = TRUE)
+
+# plot 2026 minutes vs combined minutes
+
+combined_pnat2026_min <- combined_pnat2026 %>%
+  filter(Site %in% c("CM-03", "CM-04", "CM-05", "CM-17", "CM-21", "CM-56")) %>% 
+  filter(MATCH.RATIO > 0.5) %>%
+  mutate(minute = floor_date(datetime, "minute"), 
+         DATE   = as.Date(minute)) %>%
+  distinct(Site, minute, .keep_all = TRUE) %>%
+  count(DATE, name = "activity_minutes")
+
+pnat26_min_2 <- pnat26_min %>% 
+  filter(Site %in% c("CM-03", "CM-04", "CM-05", "CM-17", "CM-21", "CM-56")) %>% 
+  mutate(minute = floor_date(datetime, "minute"), 
+         DATE   = as.Date(minute)) %>%
+  count(DATE, name = "activity_minutes")
+
+df1 <- combined_pnat2026_min %>%
+  mutate(Dataset = "Manual spring")
+
+df2 <- pnat26_min_2 %>%
+  mutate(Dataset = "AutoID")
+
+# combine
+plot_data <- bind_rows(df1, df2)
+
+# plot
+ggplot(plot_data, aes(x = DATE, y = activity_minutes, color = Dataset, fill = Dataset)) +
+  geom_point(alpha = 0.3, size = 1) +
+  geom_smooth(method = "loess", se = TRUE, linewidth = 1.2, span = 0.3) +
+  scale_x_date(limits = as.Date(c("2026-03-24", "2026-07-20"))) + 
+  scale_color_manual(values = c("Manual spring" = "cyan3", "AutoID" = "orange2")) +
+  scale_fill_manual(values = c("Manual spring" = "cyan3", "AutoID" = "orange2")) +
+  ylab("Activity minutes across all sites") +
+  xlab("") +
+  ggtitle("Nathusius' pipistrelle activity comparison 2026",
+          subtitle = "Comparing 6 locations, one has manually indentified April") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
 
 # put toghether all years------------------------------
 
@@ -668,7 +791,6 @@ n_distinct(cm24_missing$filename)
 
 # Finding out what should be match ratios based on manual data----------------
  # some code from Judith's MS thesis, but based on minutes and improved
-
 ## Spring dataset -------------
 
 winter_all <- read.csv("data/winter/cm_winter_total.csv")
@@ -936,7 +1058,7 @@ cutoff_cost <- function(res, cutoffs) {
            pct_minutes_lost = round(100 * (1 - ret / total_min), 1),
            precision        = round(cor / ret, 3),
            recall           = round(cor / true_min, 3),
-           bias_pct         = round(100 * (ret / true_min - 1), 1)),
+           bias_pct         = round(100 * (ret / true_min - 1), 1))
           
   }))
 }
@@ -950,6 +1072,8 @@ cutoff_cost(pnat_s, c(0.45, 0.47, 0.5, 0.55, 0.6))
 cutoff_cost(mysp, c(0.5, 0.6, 0.7))
 cutoff_cost(mysp_s, c(0.3, 0.4, 0.45, 0.5))
 
+
+# new cutoff cost with more info in output
 cutoff_cost2 <- function(res, cutoffs) {
   d         <- res$calls
   total_min <- res$baseline[["total_minutes"]]
@@ -974,7 +1098,9 @@ cutoff_cost2 <- function(res, cutoffs) {
       cutoff               = c,
       minutes_retained     = ret,
       pct_true_min_lost    = round(100 * (1 - cor / true_min), 1),    # % of true minutes missed (1 - Recall)
+      nr_true_min_lost     = round(true_min * pct_true_min_lost / 100),
       pct_false_min_lost   = round(100 * (1 - false_ret / false_min), 1), # % of false minutes successfully filtered out
+      nr_flase_min_lost    = round(false_min * pct_false_min_lost / 100),
       precision            = round(cor / ret, 3),
       recall               = round(cor / true_min, 3),
       bias_pct             = round(100 * (ret / true_min - 1), 1)
@@ -1129,18 +1255,71 @@ enil_big %>% filter(autoid == "EPTNIL", !has_code(id, "CNIL")) %>% count(id, sor
 
 ## separating lakes and coast-----------
 
+big$type <- ov24$type[match(big$Site, ov24$Site)]
 
-## lower match ratio logical when there are more bat species in the file------------
+big_coast <- big %>% 
+  filter(type == "coast")
+big_lake <- big %>% 
+  filter(type == "lake")
+
+# 28384 + 41970 = 70354, correct
+
+pnat_c <- analyse_species(big_coast, autoid_code = "PIPNAT", id_code = "PNAT")
+pnat_c$table
+pnat_c$baseline        
+summary(pnat_c$model)
+
+pnat_l <- analyse_species(big_lake, autoid_code = "PIPNAT", id_code = "PNAT")
+pnat_l$table
+pnat_l$baseline        
+summary(pnat_l$model)
+
+
+enil_c <- analyse_species(big_coast, autoid_code = "EPTNIL", id_code = c("CNIL", "NYCT"))
+enil_c$table
+enil_c$baseline        
+summary(enil_c$model)
+
+enil_l <- analyse_species(big_lake, autoid_code = "EPTNIL", id_code = c("CNIL", "NYCT"))
+enil_l$table
+enil_l$baseline        
+summary(enil_l$model)
+
+
+ppyg_c <- analyse_species(big_coast, autoid_code = "PIPPYG", id_code = "PPYG")
+ppyg_c$table
+ppyg_c$baseline        
+summary(ppyg_c$model)
+
+ppyg_l <- analyse_species(big_lake, autoid_code = "PIPPYG", id_code = "PPYG")
+ppyg_l$table
+ppyg_l$baseline        
+summary(ppyg_l$model)
+
+
+mysp_c <- analyse_species(big_coast, autoid_code = c("MYODAU", "MYOMYS", "MYOBRA", "MYONAT"), id_code = c("MDAU", "MYSP"))
+mysp_c$table
+mysp_c$baseline       
+summary(mysp_c$model)
+
+mysp_l <- analyse_species(big_lake, autoid_code = c("MYODAU", "MYOMYS", "MYOBRA", "MYONAT"), id_code = c("MDAU", "MYSP"))
+mysp_l$table
+mysp_l$baseline     
+summary(mysp_l$model)
+
+
+
+## is lower match ratio logical when there are more bat species in the file?------------
 
 
 f <- big %>%
-  filter(autoid == "PIPNAT") %>%
+  filter(autoid == "PIPPYG") %>%
   mutate(
     n_species = lengths(strsplit(id, "_", fixed = TRUE)),
-    has_pnat  = has_code(id, "PNAT"),
-    outcome   = case_when(has_pnat & n_species == 1 ~ "PNAT only",
-                          has_pnat & n_species  > 1 ~ "PNAT + other species",
-                          TRUE                      ~ "no PNAT"),
+    has_ppyg  = has_code(id, "PPYG"),
+    outcome   = case_when(has_ppyg & n_species == 1 ~ "PPYG only",
+                          has_ppyg & n_species  > 1 ~ "PPYG + other species",
+                          TRUE                      ~ "no PPYG"),
     ratio_bin = cut(MATCH.RATIO, c(0, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.99, 1),
                     include.lowest = TRUE)
   )
@@ -1154,7 +1333,7 @@ tab <- f %>%
 
 ggplot(tab, aes(bin_label, pct, fill = outcome)) +
   geom_col() +
-  labs(title = "Share of several species in a file on different match ratios" ,x = "match ratio (files per bin)", y = "% of PIPNAT-labelled files") +
+  labs(title = "Share of several species in a file on different match ratios" ,x = "match ratio (files per bin)", y = "% of PIPPYG-labelled files") +
   theme_minimal()
 
 f$mixed <- f$n_species > 1
