@@ -886,7 +886,7 @@ pnat_s$baseline
 summary(pnat_s$model)
 
 
-enil <- analyse_species(big, autoid_code = "EPTNIL", id_code = "CNIL")
+enil <- analyse_species(big, autoid_code = "EPTNIL", id_code = c("CNIL", "NYCT"))
 enil$table
 enil$baseline        
 summary(enil$model)
@@ -1010,128 +1010,19 @@ enil_big %>%
 
 # are low matching values connected to wrong ID-s?
 
-enil_big %>%
+matching_values <- enil_big %>%
   group_by(MATCHING) %>%
   summarise(
     n = n(),
     correct = sum(correct == 1),
-    incorrect = sum(correct == 0),
-    percent_correct = mean(correct == 1) * 100,
+    incorrect = n-correct,
+    percent_correct = correct * 100 /n,
     mean_ratio = mean(MATCH.RATIO, na.rm = TRUE),
     .groups = "drop"
   ) %>%
   arrange(MATCHING)
 
-enil_big <- enil_big %>%
-  mutate(
-    MATCH.RATIO = as.numeric(MATCH.RATIO),
-    MATCHING = as.numeric(MATCHING),
-    PULSES = as.numeric(PULSES),
-    correct = as.integer(sapply(
-      strsplit(coalesce(as.character(id), ""), "_"),
-      function(x) any(x %in% "CNIL")
-    ))
-  ) %>%
-  filter(!is.na(MATCH.RATIO))
-
-test_matching <- function(data, minimums = c(1, 2, 3, 5, 10)) {
-  
-  map_dfr(minimums, function(k) {
-    
-    m <- data %>%
-      filter(MATCHING >= k) %>%
-      group_by(Site, minute) %>%
-      slice_max(MATCH.RATIO, n = 1, with_ties = FALSE) %>%
-      ungroup()
-    
-    fit <- glm(correct ~ MATCH.RATIO,
-               family = binomial,
-               data = m)
-    
-    cf <- broom::tidy(fit)
-    
-    tibble(
-      min_matching = k,
-      n_minutes = nrow(m),
-      slope = coef(fit)[["MATCH.RATIO"]],
-      p_value = cf$p.value[cf$term == "MATCH.RATIO"]
-    )
-  })
-}
-
-enil_matching <- test_matching(enil_big)
-enil_matching
-
-test_pulses <- function(data, minimums = c(1, 2, 3, 5, 10)) {
-  
-  map_dfr(minimums, function(k) {
-    
-    m <- data %>%
-      filter(PULSES >= k) %>%
-      group_by(Site, minute) %>%
-      slice_max(MATCH.RATIO, n = 1, with_ties = FALSE) %>%
-      ungroup()
-    
-    fit <- glm(correct ~ MATCH.RATIO,
-               family = binomial,
-               data = m)
-    
-    cf <- broom::tidy(fit)
-    
-    tibble(
-      min_pulses = k,
-      n_minutes = nrow(m),
-      slope = coef(fit)[["MATCH.RATIO"]],
-      p_value = cf$p.value[cf$term == "MATCH.RATIO"]
-    )
-  })
-}
-
-enil_pulses <- test_pulses(enil_big)
-enil_pulses
-
-# no, but the enil data would make more sense if it was considered correct if the lower match.ratio number would win over a higher one with more pulses. Should we base the correct minute on the number of pulses/matching for enil?
-
-d <- enil$calls
-
-d <- d %>% 
-  left_join(
-    data_2024 %>%
-      select(filename, MATCHING, PULSES),
-    by = "filename"
-  )
-
-m <- d %>%
-  group_by(Site, minute) %>%
-  summarise(MATCH.RATIO = max(MATCH.RATIO),
-            PULSES      = max(PULSES),
-            MATCHING    = max(MATCHING),
-            correct     = max(correct), .groups = "drop")
-
-m0 <- glm(correct ~ MATCH.RATIO,               binomial, data = m)
-m1 <- glm(correct ~ MATCH.RATIO + log(PULSES), binomial, data = m)
-m2 <- glm(correct ~ MATCH.RATIO * log(PULSES), binomial, data = m)
-m3 <- glm(correct ~ log(MATCHING),             binomial, data = m)
-
-AIC(m0, m1, m2, m3)
-sapply(list(m0 = m0, m1 = m1, m2 = m2, m3 = m3),
-       function(f) as.numeric(auc(roc(m$correct, fitted(f), quiet = TRUE))))
-
-m %>%
-  mutate(pulses = cut(PULSES, c(0, 1, 2, 4, 9, 19, Inf),
-                      labels = c("1", "2", "3-4", "5-9", "10-19", "20+")),
-         ratio  = cut(MATCH.RATIO, c(0, 0.5, 0.75, 0.9, 0.999, 1), include.lowest = TRUE)) %>%
-  group_by(pulses, ratio) %>%
-  summarise(minutes = n(), pct_correct = round(100 * mean(correct), 1), .groups = "drop") %>%
-  ggplot(aes(ratio, pulses, fill = pct_correct)) +
-  geom_tile() +
-  geom_text(aes(label = paste0(pct_correct, "%\n n=", minutes)), size = 3) +
-  scale_fill_viridis_c() + theme_minimal()
-
-has_code <- function(id, codes) {
-  vapply(strsplit(as.character(id), "_", fixed = TRUE),
-         function(x) any(trimws(x) %in% codes), logical(1))
-}
+print(matching_values)
 
 enil_big %>% filter(autoid == "EPTNIL", !has_code(id, "CNIL")) %>% count(id, sort = TRUE)
 
@@ -1147,6 +1038,4 @@ enil_big %>% filter(autoid == "EPTNIL", !has_code(id, "CNIL")) %>% count(id, sor
 #  Noise_Noise_Noise     6
 #  MYSP_NYCT             4
 #  MYSP_NYCT_PPYG        4
-# There might be a way to get rid of some noise with the help of pulses and ratio. 
-
 
