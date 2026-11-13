@@ -692,7 +692,7 @@ winter_all <- winter_all %>%
                       id))
 
 spring_all <- winter_all %>%
-  filter(DATE > "2026-03-24") #602554
+  filter(DATE > "2026-03-24") #86458
 
 # choose
 
@@ -936,18 +936,66 @@ cutoff_cost <- function(res, cutoffs) {
            pct_minutes_lost = round(100 * (1 - ret / total_min), 1),
            precision        = round(cor / ret, 3),
            recall           = round(cor / true_min, 3),
-           bias_pct         = round(100 * (ret / true_min - 1), 1))
+           bias_pct         = round(100 * (ret / true_min - 1), 1)),
+          
   }))
 }
 
-
+cutoff_cost(ppyg, c(0.5, 0.6, 0.7))
 cutoff_cost(ppyg_s, c(0.4, 0.48, 0.5, 0.55, 0.6, 0.61))
 
+cutoff_cost(pnat, c(0.5, 0.6, 0.7))
 cutoff_cost(pnat_s, c(0.45, 0.47, 0.5, 0.55, 0.6))
 
+cutoff_cost(mysp, c(0.5, 0.6, 0.7))
 cutoff_cost(mysp_s, c(0.3, 0.4, 0.45, 0.5))
 
-# what's happening with enil-------------
+cutoff_cost2 <- function(res, cutoffs) {
+  d         <- res$calls
+  total_min <- res$baseline[["total_minutes"]]
+  true_min  <- res$baseline[["true_minutes"]]
+  false_min <- total_min - true_min  # Total background/false minutes
+  
+  bind_rows(lapply(cutoffs, function(c) {
+    keep <- d$MATCH.RATIO >= c
+    ok   <- keep & d$correct == 1
+    
+    # Get distinct site-minute pairs
+    retained_pairs <- distinct(d[keep, ], Site, minute)
+    correct_pairs  <- distinct(d[ok, ],   Site, minute)
+    
+    ret <- nrow(retained_pairs)
+    cor <- nrow(correct_pairs)
+    
+    # Retained minutes that do not contain a correct call (false retained minutes)
+    false_ret <- nrow(anti_join(retained_pairs, correct_pairs, by = c("Site", "minute")))
+    
+    tibble(
+      cutoff               = c,
+      minutes_retained     = ret,
+      pct_true_min_lost    = round(100 * (1 - cor / true_min), 1),    # % of true minutes missed (1 - Recall)
+      pct_false_min_lost   = round(100 * (1 - false_ret / false_min), 1), # % of false minutes successfully filtered out
+      precision            = round(cor / ret, 3),
+      recall               = round(cor / true_min, 3),
+      bias_pct             = round(100 * (ret / true_min - 1), 1)
+    )
+  }))
+}
+
+cutoff_cost2(ppyg, c(0.5, 0.6, 0.7))
+cutoff_cost2(ppyg_s, c(0.5, 0.6, 0.7))
+
+cutoff_cost2(pnat, c(0.5, 0.6, 0.7))
+cutoff_cost2(pnat_s, c(0.5, 0.6, 0.7))
+
+cutoff_cost2(mysp, c(0.5, 0.6, 0.7))
+cutoff_cost2(mysp_s, c(0.5, 0.6, 0.7))
+
+cutoff_cost2(enil, c(0.5, 0.6, 0.7))
+cutoff_cost2(enil_s, c(0.5, 0.6, 0.7, 0.8, 0.9))
+
+
+## what's happening with enil-------------
 
 enil$minutes %>%
   group_by(correct) %>%
@@ -966,6 +1014,46 @@ enil_cost <- cutoff_cost(
 )
 
 enil_cost
+
+ggplot(enil$minutes,
+       aes(x = MATCH.RATIO, fill = factor(correct))) +
+  geom_density(alpha = 0.4) +
+  labs(
+    title = "Enil correct ID-s vs KPRO match ratio",
+    x = "MATCH.RATIO",
+    fill = "Correct identification"
+  ) +
+  theme_classic()
+
+ggplot(pnat$minutes,
+       aes(x = MATCH.RATIO, fill = factor(correct))) +
+  geom_density(alpha = 0.4) +
+  labs(
+    title = "Enil correct ID-s vs KPRO match ratio",
+    x = "MATCH.RATIO",
+    fill = "Correct identification"
+  ) +
+  theme_classic()
+
+ggplot(ppyg$minutes,
+       aes(x = MATCH.RATIO, fill = factor(correct))) +
+  geom_density(alpha = 0.4) +
+  labs(
+    title = "Enil correct ID-s vs KPRO match ratio",
+    x = "MATCH.RATIO",
+    fill = "Correct identification"
+  ) +
+  theme_classic()
+
+ggplot(mysp$minutes,
+       aes(x = MATCH.RATIO, fill = factor(correct))) +
+  geom_density(alpha = 0.4) +
+  labs(
+    title = "Enil correct ID-s vs KPRO match ratio",
+    x = "MATCH.RATIO",
+    fill = "Correct identification"
+  ) +
+  theme_classic()
 
 ggplot(enil$minutes,
        aes(x = MATCH.RATIO, fill = factor(correct))) +
@@ -1039,3 +1127,75 @@ enil_big %>% filter(autoid == "EPTNIL", !has_code(id, "CNIL")) %>% count(id, sor
 #  MYSP_NYCT             4
 #  MYSP_NYCT_PPYG        4
 
+## separating lakes and coast-----------
+
+
+## lower match ratio logical when there are more bat species in the file------------
+
+
+f <- big %>%
+  filter(autoid == "PIPNAT") %>%
+  mutate(
+    n_species = lengths(strsplit(id, "_", fixed = TRUE)),
+    has_pnat  = has_code(id, "PNAT"),
+    outcome   = case_when(has_pnat & n_species == 1 ~ "PNAT only",
+                          has_pnat & n_species  > 1 ~ "PNAT + other species",
+                          TRUE                      ~ "no PNAT"),
+    ratio_bin = cut(MATCH.RATIO, c(0, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.99, 1),
+                    include.lowest = TRUE)
+  )
+
+tab <- f %>%
+  count(ratio_bin, outcome) %>%
+  group_by(ratio_bin) %>%
+  mutate(pct = 100 * n / sum(n),
+         bin_label = paste0(ratio_bin, "\nn=", sum(n))) %>%
+  ungroup()
+
+ggplot(tab, aes(bin_label, pct, fill = outcome)) +
+  geom_col() +
+  labs(title = "Share of several species in a file on different match ratios" ,x = "match ratio (files per bin)", y = "% of PIPNAT-labelled files") +
+  theme_minimal()
+
+f$mixed <- f$n_species > 1
+summary(glm(mixed ~ MATCH.RATIO, family = binomial, data = f))   # negative slope = more mixed at low ratio
+cor.test(f$MATCH.RATIO, f$n_species, method = "spearman")
+
+prec <- f %>%
+  group_by(ratio_bin) %>%
+  summarise(files = n(), ok = sum(has_ppyg), .groups = "drop") %>%
+  rowwise() %>%
+  mutate(prec = ok / files,
+         lo = binom.test(ok, files)$conf.int[1],
+         hi = binom.test(ok, files)$conf.int[2]) %>%
+  ungroup()
+
+ggplot(prec, aes(ratio_bin, prec)) +
+  geom_pointrange(aes(ymin = lo, ymax = hi)) +
+  geom_hline(yintercept = 0.9, linetype = "dashed") +
+  coord_cartesian(ylim = c(0.5, 1)) +
+  labs(x = "match ratio", y = "share of files containing PPYG") +
+  theme_minimal()
+
+sub <- f %>% filter(MATCH.RATIO >= 0.5, MATCH.RATIO < 0.6)
+binom.test(sum(sub$has_ppyg), nrow(sub), p = 0.9, alternative = "greater")
+
+sub <- sub %>% mutate(cluster = paste(Site, as.Date(datetime)))
+cl  <- split(sub$has_ppyg, sub$cluster)
+set.seed(1)
+boot <- replicate(2000, mean(unlist(sample(cl, length(cl), replace = TRUE))))
+quantile(boot, c(0.025, 0.975))
+
+
+mod <- glm(mixed ~ MATCH.RATIO, family = binomial, data = f)
+predict(mod, data.frame(MATCH.RATIO = c(0.5, 0.75, 1)), type = "response")
+
+# observed, not modelled
+f %>% group_by(ratio_bin) %>%
+  summarise(files = n(),
+            pct_mixed    = round(100 * mean(mixed), 1),
+            pct_with_ppyg = round(100 * mean(has_ppyg), 1))
+
+# among the mixed files only: do they still contain PPYG?
+f %>% filter(mixed) %>% group_by(ratio_bin) %>%
+  summarise(files = n(), pct_with_ppyg = round(100 * mean(has_ppyg), 1))
