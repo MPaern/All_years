@@ -42,8 +42,8 @@ cm25$datetime <- ymd_hms(cm25$datetime, tz = "Europe/Oslo", truncated = 3)
 cm24$datetime <- ymd_hms(cm24$datetime, tz = "Europe/Oslo", truncated = 3)
 cm26$datetime <- ymd_hms(cm26$datetime, tz = "Europe/Oslo", truncated = 3)
 
-cm24 <- cm24 %>% rename(MATCH.RATIO = MATCH_RATIO)
-cm26 <- cm26 %>% rename(MATCH.RATIO = MATCH_RATIO)
+cm25 <- cm25 %>% rename(MATCH.RATIO = MATCH_RATIO,
+                        DATE.12 = DATE_12)
 
 ov25 <- read.csv("data/2025/overview_2025.csv")
 ov25$type[ov25$Site == "CM-01"] <- "coast"
@@ -55,11 +55,60 @@ ov26 <- read.csv("data/2026/overview_2026.csv")
 ov26$type[ov26$Site == "CM-01"] <- "coast"
 ov26$type[ov26$Site %in% c("CM-07", "CM-41")] <- "lake"
 
+# dates when detectors were working
+
+on24 <- read.csv("data/2024/NoBats_2024.csv")
+on24 <- on24 %>% rename(DATE.12 = Date)
+on25 <- read.csv("data/2025/NoBats_2025.csv")
+on25 <- on25 %>% rename(DATE.12 = Date)
+on26 <- read.csv("data/2026/NoBats2026.csv")
+on26 <- on26 %>% rename(DATE.12 = Date)
+
+# Detector not working---------------
+# put together all years------------------------------
+
+
+# active nights
+active <- function(d, fmt = NULL) {
+  d %>%
+    transmute(Site    = as.character(Site),
+              DATE.12 = if (is.null(fmt)) as.Date(DATE.12)
+              else as.Date(as.character(DATE.12), format = fmt)) %>% #added format
+    distinct()
+}
+
+active_nights <- bind_rows(active(cm24), active(cm25), active(cm26),
+                    active(on24), active(on25), active(on26, fmt = "%d/%m/%Y")) %>%
+  distinct() %>% 
+  filter(DATE.12 >= as.Date("2024-06-15"))
+
+# activity minutes for one species
+nightly_activity <- function(datasets, autoid_code, match_ratio = 0.5, active_nights) {
+  nights <- bind_rows(lapply(datasets, function(d) {
+    d %>%
+      filter(autoid %in% autoid_code, MATCH.RATIO >= match_ratio) %>%
+      transmute(Site    = as.character(Site),
+                DATE.12 = as.Date(DATE.12),
+                minute  = floor_date(datetime, "minute"))
+  })) %>%
+    distinct(Site, DATE.12, minute) %>%
+    count(Site, DATE.12, name = "activity_min")
+  
+  active_nights %>%
+    left_join(nights, by = c("Site", "DATE.12")) %>%
+    mutate(activity_min = replace_na(activity_min, 0))
+}
+
+pnat <- nightly_activity(list(cm24, cm25, cm26), "PIPNAT", match_ratio = 0.5, active_nights = active_nights)
+ppyg <- nightly_activity(list(cm24, cm25, cm26), "PIPPYG", min_ratio = 0.7, active_nights = active_nights)
+
+
+
 # 2025--------------------------------------
 
-# 2025 Pnat plot all sites, check different match ratios
+# 2025 Pnat plot all sites
 
-pnat25 <- cm25 %>% filter(autoid == "PIPNAT") %>% droplevels()
+pnat25 <- cm25 %>% filter(autoid == "PIPNAT", MATCH_RATIO >= 0.5) %>% droplevels()
 pnat25$type <- ov25$type[match(pnat25$Site, ov25$Site)]
 pnat25$DATE <- as.Date(pnat25$DATE)
 summary(is.na(pnat25$DATE))
@@ -381,10 +430,6 @@ ggplot(plot_data, aes(x = DATE, y = activity_minutes, color = Dataset, fill = Da
   theme_minimal() +
   theme(legend.position = "bottom")
 
-
-# put toghether all years------------------------------
-
-
 all_years <- bind_rows(
   daily24 %>% mutate(year = "2024"),
   daily25 %>% mutate(year = "2025"),
@@ -457,31 +502,33 @@ ggplot(daily26_spp, aes(DATE, activity_min, color = autoid, fill = autoid)) +
   theme_minimal()
 
 # activity minutes in 7 sites that were up all winter 2025/2026 from 2024-2026------------
-# fix with removing double data
-sites <- c("CM-03", "CM-04", "CM-05", "CM-06", "CM-17", "CM-23", "CM-56")
+
+sites <- c("CM-03", "CM-04", "CM-05", "CM-06", "CM-17", "CM-21", "CM-56")
 start <- as.Date("2024-06-20")
 end   <- as.Date("2026-07-30")
 
-# automatic IDs (same confidence filter as before)
-auto <- bind_rows(
-  cm24 %>% mutate(Site = as.character(Site)),
-  cm25 %>% mutate(Site = as.character(Site)),
-  cm26 %>% mutate(Site = as.character(Site))
+# automatic IDs 
+auto_7sites <- bind_rows(
+  cm24 %>% 
+    filter(Site %in% sites),
+  cm25 %>% 
+    filter(Site %in% sites),
+  cm26 %>% 
+    # datetime border here
+    filter(Site %in% sites, datetime >= as.POSIXct("2026-04-24 00:00:00", tz = "Europe/Oslo"))
 ) %>%
-  filter(autoid == "PIPNAT", MATCH_RATIO > 0.4) %>%
+  filter(autoid == "PIPNAT", MATCH_RATIO > 0.5) %>%
   select(Site, datetime)
 
 # manual IDs
-man <- cmw %>%
-  mutate(Site = as.character(Site)) %>%
-  filter(manual == "PNAT") %>%     # adapt to how the column is coded
+manualw <- cmw %>%
+  filter(manual == "PNAT") %>%
   select(Site, datetime)
 
-act <- bind_rows(auto, man) %>%
-  filter(Site %in% sites) %>%
+all_7sites <- bind_rows(auto_7sites, manualw) %>%
   mutate(minute = floor_date(datetime, "minute")) %>%
-  distinct(Site, minute) %>%                 # also removes auto/manual duplicates
-  mutate(DATE = as.Date(minute)) %>%
+  distinct(Site, minute) %>%                 # also removes duplicates
+  mutate(DATE = as.Date(minute, tz = "Europe/Oslo")) %>%
   filter(DATE >= start, DATE <= end) %>%
   count(Site, DATE, name = "activity_min") %>%
   complete(Site = sites,
@@ -491,11 +538,12 @@ act <- bind_rows(auto, man) %>%
          day  = as.numeric(DATE - start))
 
 m2 <- gam(activity_min ~ s(day, k = 80) + s(Site, bs = "re"),
-          family = nb(), method = "REML", data = act)
+          family = nb(), method = "REML", data = all_7sites)
 
-gam.check(m2)
+gam.check(m2) #low k
 
-newd <- tibble(day = 0:as.numeric(end - start), Site = act$Site[1])
+
+newd <- tibble(day = 0:as.numeric(end - start), Site = all_7sites$Site[1])
 pr <- predict(m2, newd, type = "link", se.fit = TRUE, exclude = "s(Site)")
 
 newd <- newd %>%
@@ -504,11 +552,11 @@ newd <- newd %>%
          lwr = exp(pr$fit - 1.96 * pr$se.fit),
          upr = exp(pr$fit + 1.96 * pr$se.fit))
 
-daily_mean <- act %>% group_by(DATE) %>% summarise(activity_min = mean(activity_min))
+daily_mean <- all_7sites %>% group_by(DATE) %>% summarise(activity_min = mean(activity_min))
 
 ggplot() +
   geom_point(data = daily_mean, aes(DATE, activity_min),
-             color = "cyan3", alpha = 0.4, size = 1.5) +
+             color = "cyan4", alpha = 0.4, size = 1.5) +
   geom_ribbon(data = newd, aes(DATE, ymin = lwr, ymax = upr), alpha = 0.2) +
   geom_line(data = newd, aes(DATE, fit), linewidth = 1) +
   scale_x_date(date_breaks = "2 months", date_labels = "%b %y") +
@@ -516,34 +564,26 @@ ggplot() +
   xlab("") +
   theme_minimal()
 
-ggplot() +
-  geom_point(data = daily_mean, aes(DATE, activity_min),
-             color = "cyan3", alpha = 0.4, size = 1.5) +
-  geom_ribbon(data = newd, aes(DATE, ymin = lwr, ymax = upr), alpha = 0.2) +
-  geom_line(data = newd, aes(DATE, fit), linewidth = 1) +
-  scale_x_date(date_breaks = "2 months", date_labels = "%b %y") +
-  coord_cartesian(ylim = c(0, 20)) +
-  ylab("Activity minutes per site per day") +
-  xlab("") +
-  theme_minimal()
 
 # with autoid for cmw too
 
-keep <- function(d) {
-  d %>%
-    mutate(Site = as.character(Site)) %>%
-    select(Site, autoid, MATCH_RATIO, datetime)
-}
-
-auto1 <- bind_rows(keep(cm24), keep(cm25), keep(cm26), keep(cmw)) %>%
-  filter(autoid == "PIPNAT", MATCH_RATIO > 0.4) %>%
+auto_7sites_auto <- bind_rows(
+  cm24 %>% 
+    filter(Site %in% sites),
+  cm25 %>% 
+    filter(Site %in% sites) %>% 
+    select(-datetime_12),
+  cm26 %>% 
+    filter(Site %in% sites),
+  cmw
+) %>%
+  filter(autoid == "PIPNAT", MATCH_RATIO > 0.5) %>%
   select(Site, datetime)
 
-act1 <- auto1 %>%
-  filter(Site %in% sites) %>%
+all_7sites_auto <- auto_7sites_auto %>%
   mutate(minute = floor_date(datetime, "minute")) %>%
-  distinct(Site, minute) %>%
-  mutate(DATE = as.Date(minute)) %>%
+  distinct(Site, minute) %>%                 # also removes duplicates
+  mutate(DATE = as.Date(minute, tz = "Europe/Oslo")) %>%
   filter(DATE >= start, DATE <= end) %>%
   count(Site, DATE, name = "activity_min") %>%
   complete(Site = sites,
@@ -552,29 +592,28 @@ act1 <- auto1 %>%
   mutate(Site = factor(Site),
          day  = as.numeric(DATE - start))
 
-m21 <- gam(activity_min ~ s(day, k = 80) + s(Site, bs = "re"),
-          family = nb(), method = "REML", data = act1)
+m2_auto <- gam(activity_min ~ s(day, k = 80) + s(Site, bs = "re"),
+          family = nb(), method = "REML", data = all_7sites_auto)
 
-gam.check(m21)
+gam.check(m2_auto) #low k
 
-newd1 <- tibble(day = 0:as.numeric(end - start), Site = act1$Site[1])
-pr1 <- predict(m21, newd1, type = "link", se.fit = TRUE, exclude = "s(Site)")
 
-newd1 <- newd1 %>%
+newd_auto <- tibble(day = 0:as.numeric(end - start), Site = all_7sites_auto$Site[1])
+pr_auto <- predict(m2_auto, newd_auto, type = "link", se.fit = TRUE, exclude = "s(Site)")
+
+newd_auto <- newd_auto %>%
   mutate(DATE = start + day,
-         fit = exp(pr1$fit),
-         lwr = exp(pr1$fit - 1.96 * pr1$se.fit),
-         upr = exp(pr1$fit + 1.96 * pr1$se.fit))
+         fit = exp(pr_auto$fit),
+         lwr = exp(pr_auto$fit - 1.96 * pr_auto$se.fit),
+         upr = exp(pr_auto$fit + 1.96 * pr_auto$se.fit))
 
-
-
-daily_mean1 <- act1 %>% group_by(DATE) %>% summarise(activity_min = mean(activity_min))
+daily_mean_auto <- all_7sites_auto %>% group_by(DATE) %>% summarise(activity_min = mean(activity_min))
 
 ggplot() +
-  geom_point(data = daily_mean1, aes(DATE, activity_min),
-             color = "cyan3", alpha = 0.4, size = 1.5) +
-  geom_ribbon(data = newd1, aes(DATE, ymin = lwr, ymax = upr), alpha = 0.2) +
-  geom_line(data = newd1, aes(DATE, fit), linewidth = 1) +
+  geom_point(data = daily_mean_auto, aes(DATE, activity_min),
+             color = "cyan4", alpha = 0.4, size = 1.5) +
+  geom_ribbon(data = newd_auto, aes(DATE, ymin = lwr, ymax = upr), alpha = 0.2) +
+  geom_line(data = newd_auto, aes(DATE, fit), linewidth = 1) +
   scale_x_date(date_breaks = "2 months", date_labels = "%b %y") +
   ylab("Activity minutes per site per day") +
   xlab("") +
@@ -582,13 +621,141 @@ ggplot() +
 
 # both:
   
-both <- bind_rows(newd  %>% mutate(src = "autoid + manual (cmw)"),
-                  newd1 %>% mutate(src = "autoid only (cmw too)"))
+both <- bind_rows(newd  %>% mutate(src = "autoid + manual"),
+                  newd_auto %>% mutate(src = "autoid only"))
 
 ggplot(both, aes(DATE, fit, color = src, fill = src)) +
   geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.15, color = NA) +
   geom_line(linewidth = 1) +
-  coord_cartesian(ylim = c(0, 20)) +
+  coord_cartesian() +
+  theme_minimal()
+
+border <- as.POSIXct("2026-04-24 00:00:00", tz = "Europe/Oslo")
+
+make_daily <- function(x) {
+  x %>%
+    filter(Site %in% sites) %>%
+    mutate(minute = floor_date(datetime, "minute")) %>%
+    distinct(Site, minute) %>%
+    mutate(DATE = as.Date(minute, tz = "Europe/Oslo")) %>%
+    filter(DATE >= start, DATE <= end) %>%
+    count(Site, DATE, name = "activity_min") %>%
+    complete(Site = sites, DATE = seq(start, end, by = "day"),
+             fill = list(activity_min = 0)) %>%
+    mutate(Site = factor(Site, levels = sites),
+           day  = as.numeric(DATE - start))
+}
+
+fit_curve <- function(daily) {
+  m    <- gam(activity_min ~ s(day, k = 80) + s(Site, bs = "re"),
+              family = nb(), method = "REML", data = daily)
+  newd <- tibble(day = 0:as.numeric(end - start), Site = daily$Site[1])
+  pr   <- predict(m, newd, type = "link", se.fit = TRUE, exclude = "s(Site)")
+  list(model = m,
+       curve = newd %>% mutate(DATE = start + day,
+                               fit = exp(pr$fit),
+                               lwr = exp(pr$fit - 1.96 * pr$se.fit),
+                               upr = exp(pr$fit + 1.96 * pr$se.fit)))
+}
+
+# shared automatic part: cm24, cm25, cm26 after the border
+base <- bind_rows(cm24 %>% filter(Site %in% sites),
+                  cm25 %>% filter(Site %in% sites),
+                  cm26 %>% filter(Site %in% sites, datetime >= border)) %>%
+  filter(autoid == "PIPNAT", MATCH_RATIO > 0.5) %>%
+  select(Site, datetime)
+
+# the only part that differs: cmw
+cmw_manual <- cmw %>% filter(Site %in% sites, manual== "PNAT") %>% select(Site, datetime)
+cmw_auto   <- cmw %>% filter(Site %in% sites, autoid == "PIPNAT", MATCH_RATIO > 0.5) %>% select(Site, datetime)
+
+all_7sites      <- make_daily(bind_rows(base, cmw_manual))
+all_7sites_auto <- make_daily(bind_rows(base, cmw_auto))
+stopifnot(nrow(all_7sites) == 5397, nrow(all_7sites_auto) == 5397)
+
+fm <- fit_curve(all_7sites)
+fa <- fit_curve(all_7sites_auto)
+
+both <- bind_rows(fm$curve %>% mutate(src = "autoid + manual"),
+                  fa$curve %>% mutate(src = "autoid only"))
+
+ggplot(both, aes(DATE, fit, color = src, fill = src)) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 1) +
+  theme_minimal()
+
+# compare years for 7 locations for activity peaks:
+compare <- all_7sites_auto %>%
+  mutate(
+    DATE = as.Date(DATE),
+    year = year(DATE)
+  ) %>%
+  filter(
+    month(DATE) >= 8,
+    (month(DATE) < 12 |
+       (month(DATE) == 12 & day(DATE) == 1)),
+    year %in% c(2024, 2025, 2026)
+  )
+
+
+compare <- compare %>%
+  mutate(
+    DATE = as.Date(DATE, tz = "Europe/Oslo"),
+    period_day = make_date(
+      2000,
+      month(DATE),
+      day(DATE)
+    )
+  ) %>%
+  group_by(Site, year, period_day) %>%
+  summarise(
+    activity_min = mean(activity_min, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(compare,
+       aes(x = period_day,
+           y = activity_min,
+           colour = factor(year),
+           group = year)) +
+  geom_line(linewidth = 0.8, alpha = 0.8) +
+  facet_wrap(~Site, scales = "free_y") +
+  scale_x_date(date_labels = "%d.%m",
+               date_breaks = "1 month") +
+  labs(
+    title = "Daily activity comparison between years",
+    x = "Date",
+    y = "Activity (minutes)",
+    colour = "Year"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+compare_mean <- compare %>%
+  group_by(year, period_day) %>%
+  summarise(
+    activity_min = mean(activity_min, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(compare_mean,
+       aes(x = period_day,
+           y = activity_min,
+           colour = factor(year),
+           group = year)) +
+  geom_line(linewidth = 1) +
+  scale_x_date(
+    date_labels = "%d.%m",
+    date_breaks = "1 month"
+  ) +
+  labs(
+    title = "Average activity across all sites",
+    x = "Date",
+    y = "Mean activity (minutes)",
+    colour = "Year"
+  ) +
   theme_minimal()
 
 # winter--------------------
