@@ -28,19 +28,42 @@ cm24 <- read.csv("data/2024/cm_2024_night.csv")
 cm26 <- read.csv("data/2026/cm_2026_night.csv")
 cmw <- read.csv("data/winter/cm_winter.csv")
 
+# datetime into Posixct, truncated = 3 makes midnight an actual time.
+cm25$datetime <- ymd_hms(cm25$datetime, tz = "Europe/Oslo", truncated = 3)
+cm24$datetime <- ymd_hms(cm24$datetime, tz = "Europe/Oslo", truncated = 3)
+cm26$datetime <- ymd_hms(cm26$datetime, tz = "Europe/Oslo", truncated = 3)
+
+#cm24 cm-04 few days missing?
+
+id <- read.csv("P:/SW_CoastalMonitoring/Data_collection_2024/CM-04/WAV/KPRO_V1_25.07.2024_CM-04/id.csv")
+id <- id %>% 
+  mutate(
+    filename = OUT.FILE.FS,
+    autoid = AUTO.ID.,
+    Site = "CM-04",
+    datetime = as.POSIXct(paste(DATE, TIME),format = "%d/%m/%Y %H:%M:%S",tz = "Europe/Oslo"),
+    DATE = as.character(as.Date(DATE, format = "%d/%m/%Y")),
+    DATE.12 = as.character(as.Date(DATE.12, format = "%d/%m/%Y"))
+  )
+
+
+cm24 <- bind_rows(
+  cm24,
+  id %>% select(any_of(names(cm24)))
+)
+
+#winter 
+
 cmw <- cmw %>%
-  mutate(manual = id) %>%
+  mutate(manual = id,
+         DATE.12 = DATE_12,
+         MATCH.RATIO = MATCH_RATIO) %>%
   separate_rows(manual, sep = "_")
 cmw <- cmw %>%
   mutate(
     datetime = as.POSIXct(datetime, format = "%Y-%m-%d %H:%M:%S", tz = "Europe/Oslo"),
     datetime_12 = as.POSIXct(datetime_12, format = "%Y-%m-%d %H:%M:%S", tz = "Europe/Oslo")
   )
-
-# datetime into Posixct, truncated = 3 makes midnight an actual time.
-cm25$datetime <- ymd_hms(cm25$datetime, tz = "Europe/Oslo", truncated = 3)
-cm24$datetime <- ymd_hms(cm24$datetime, tz = "Europe/Oslo", truncated = 3)
-cm26$datetime <- ymd_hms(cm26$datetime, tz = "Europe/Oslo", truncated = 3)
 
 cm25 <- cm25 %>% rename(MATCH.RATIO = MATCH_RATIO,
                         DATE.12 = DATE_12)
@@ -65,7 +88,7 @@ on26 <- read.csv("data/2026/NoBats2026.csv")
 on26 <- on26 %>% rename(DATE.12 = Date)
 
 # Detector not working---------------
-# put together all years------------------------------
+## put together all years
 
 
 # active nights
@@ -96,11 +119,243 @@ nightly_activity <- function(datasets, autoid_code, match_ratio = 0.5, active_ni
   
   active_nights %>%
     left_join(nights, by = c("Site", "DATE.12")) %>%
-    mutate(activity_min = replace_na(activity_min, 0))
+    mutate(activity_min = replace_na(activity_min, 0),
+           year = format(DATE.12, "%Y"))
 }
 
 pnat <- nightly_activity(list(cm24, cm25, cm26), "PIPNAT", match_ratio = 0.5, active_nights = active_nights)
-ppyg <- nightly_activity(list(cm24, cm25, cm26), "PIPPYG", min_ratio = 0.7, active_nights = active_nights)
+ppyg <- nightly_activity(list(cm24, cm25, cm26), "PIPPYG", match_ratio = 0.5, active_nights = active_nights)
+enil <- nightly_activity(list(cm24, cm25, cm26), "EPTNIL", match_ratio = 0.5, active_nights = active_nights)
+mysp <- nightly_activity(list(cm24, cm25, cm26), c("MYODAU", "MYONAT", "MYOMYS", "MYOBRA"), match_ratio = 0.5, active_nights = active_nights)
+
+
+#plot
+pnat_all <- ggplot(pnat, aes(x = DATE.12, y = activity_min)) +
+  geom_point(color = "cyan3", size = 3, alpha = 0.8) +
+  geom_smooth(aes(group = year), method = "loess", span = 0.2, color = "darkblue", fill = "blue", se = TRUE) +
+  ylab("Activity minutes") +
+  xlab("") +
+  ggtitle("Nathusius' pipistrelle (Pipistrellus nathusii) activity") +
+  theme_minimal()
+
+pnat_all
+
+pnat_yr <- pnat%>%
+  mutate(DATE_plot = as.Date(format(DATE.12, "2000-%m-%d")))  # same dummy year for all
+
+
+ggplot(pnat_yr, aes(DATE_plot, activity_min, color = year, fill = year)) +
+  geom_point(size = 2, alpha = 0.4) +
+  geom_smooth(aes(group = year), 
+              method = "gam", 
+              formula = y ~ s(x, k = 15),
+              method.args = list(gamma = 0.5), # <--- Reduces penalty, increases amplitude
+              linewidth = 1.2, 
+              se = TRUE) +
+  scale_x_date(limits = as.Date(c("2000-03-11", "2000-10-16")),
+               date_breaks = "1 month", date_labels = "%b") +
+  ylab("Activity minutes across all sites") +
+  xlab("") +
+  ggtitle("Nathusius' pipistrelle (Pipistrellus nathusii) activity") +
+  theme_minimal()
+
+
+# 0-inflated data
+
+ggplot(pnat_yr, aes(x = DATE_plot, y = activity_min, color = year, fill = year)) +
+  geom_point(size = 2, alpha = 0.4) +
+  geom_smooth(
+    data = subset(pnat_yr, activity_min > 0), 
+    aes(group = year), 
+    method = "gam", 
+    formula = y ~ s(x, k = 15),
+    linewidth = 1.2, 
+    se = TRUE
+  ) +
+  scale_color_viridis_d(option = "plasma") +
+  scale_fill_viridis_d(option = "plasma", alpha = 0.2) + 
+  
+  scale_x_date(limits = as.Date(c("2000-03-11", "2000-10-16")),
+               date_breaks = "1 month", date_labels = "%b") +
+  ylab("Activity minutes across all sites") +
+  xlab("") +
+  ggtitle("Nathusius' pipistrelle (Pipistrellus nathusii) activity") +
+  theme_minimal()
+
+ggplot(pnat_yr, aes(x = DATE_plot, y = activity_min, color = year, fill = year)) +
+  geom_point(size = 2, alpha = 0.4) +
+  geom_smooth(
+    data = subset(pnat_yr, activity_min > 1), 
+    aes(group = year), 
+    method = "gam", 
+    formula = y ~ s(x, k = 15),
+    linewidth = 1.2, 
+    se = TRUE,
+    alpha = 0.2
+  ) +
+  scale_color_manual(values = c("2024" = "#003333", 
+                                "2025" = "#01665e", 
+                                "2026" = "#66ffff")) +
+  scale_fill_manual(values = c("2024" = "#003333", 
+                               "2025" = "#01665e", 
+                               "2026" = "#66cccc")) +
+  
+  scale_x_date(limits = as.Date(c("2000-03-11", "2000-10-20")),
+               date_breaks = "1 month", date_labels = "%b") +
+  coord_cartesian(ylim = c(0, 300))+
+  ylab("Activity minutes across all sites") +
+  xlab("") +
+  ggtitle("Nathusius' pipistrelle (Pipistrellus nathusii) activity") +
+  theme_minimal()
+
+# lakes vs coast
+
+pnat_yr$type <- coalesce(
+  ov24$type[match(pnat_yr$Site, ov24$Site)],
+  ov25$type[match(pnat_yr$Site, ov25$Site)]
+)
+
+summary(is.na(pnat_yr$type))
+
+ggplot(filter(pnat_yr, type == "coast"), aes(x = DATE_plot, y = activity_min, color = year, fill = year)) +
+  geom_point(size = 2, alpha = 0.4) +
+  geom_smooth(
+    data = subset(filter(pnat_yr, type == "coast"), activity_min > 1), 
+    aes(group = year), 
+    method = "loess", 
+    # formula = y ~ s(x, k = 15),
+    linewidth = 1.2, 
+    se = TRUE,
+    alpha = 0.2
+  ) +
+  scale_color_manual(values = c("2024" = "#003333", 
+                                "2025" = "#01665e", 
+                                "2026" = "#66ffff")) +
+  scale_fill_manual(values = c("2024" = "#003333", 
+                               "2025" = "#01665e", 
+                               "2026" = "#66cccc")) +
+  
+  scale_x_date(limits = as.Date(c("2000-03-11", "2000-10-20")),
+               date_breaks = "1 month", date_labels = "%b") +
+  #coord_cartesian(ylim = c(0, 300))+
+  ylab("Activity minutes across all sites") +
+  xlab("") +
+  ggtitle("Nathusius' pipistrelle (Pipistrellus nathusii) activity") +
+  theme_minimal()
+
+## plots for missing data-----------------
+
+
+observed <- bind_rows(active(cm24), active(cm25), active(cm26), active(cmw)) %>%
+  distinct() %>% mutate(Type = "Observed")
+
+nodata <- bind_rows(active(on24, fmt = "%d/%m/%Y"), active(on25, fmt = "%d/%m/%Y"),
+                    active(on26, fmt = "%d/%m/%Y")) %>%
+  distinct() %>% mutate(Type = "NoData")
+
+# build dataset
+
+active_all <- bind_rows(observed, nodata) %>%
+  distinct(Site, DATE.12, .keep_all = TRUE)
+
+active_all <- active_all %>% mutate(year = year(DATE.12))
+
+# add winter sites to table
+
+winter_start <- as.Date("2025-10-22")
+winter_end   <- as.Date("2026-03-24")
+
+winter_sites <- tibble(Site = c("CM-03", "CM-04", "CM-06", "CM-17", "CM-05", "CM-21", "CM-56"))
+
+gaps <- tribble(
+  ~Site,   ~from,                 ~to,
+  "CM-21", as.Date("2025-12-30"), as.Date("2026-01-07"),
+  "CM-05", as.Date("2026-01-05"), as.Date("2026-01-07"),
+  "CM-03", as.Date("2025-12-18"), as.Date("2026-01-07")
+)
+
+gap_nights <- gaps %>%
+  rowwise() %>% mutate(DATE.12 = list(seq(from, to, by = "day"))) %>% ungroup() %>%
+  select(Site, DATE.12) %>% unnest(DATE.12)
+
+# winter nights = NoData, except the gaps
+winter_nights <- expand_grid(winter_sites, DATE.12 = seq(winter_start, winter_end, by = "day")) %>%
+  anti_join(gap_nights, by = c("Site", "DATE.12")) %>%
+  mutate(Type = "NoData")
+
+# Observed + NoData only 
+active_all <- bind_rows(active_all %>% select(Site, DATE.12, Type), winter_nights) %>%
+  distinct(Site, DATE.12, .keep_all = TRUE) %>%
+  mutate(year = year(DATE.12))
+
+# plus the gaps as explicit Missing rows
+plot_src <- bind_rows(active_all %>% select(Site, DATE.12, Type),
+                      gap_nights %>% mutate(Type = "Missing")) %>%
+  distinct(Site, DATE.12, .keep_all = TRUE) %>%
+  mutate(year = year(DATE.12))
+
+all_dates <- plot_src %>%
+  group_by(Site, year) %>%
+  summarise(first = min(DATE.12), last = max(DATE.12), .groups = "drop") %>%
+  rowwise() %>%
+  mutate(DATE.12 = list(seq(first, last, by = "day"))) %>%
+  ungroup() %>%
+  select(Site, year, DATE.12) %>%
+  unnest(DATE.12) %>%
+  left_join(plot_src %>% select(Site, DATE.12, Type), by = c("Site", "DATE.12")) %>%
+  mutate(Type = factor(replace_na(Type, "Missing"),
+                       levels = c("Observed", "NoData", "Missing")),
+         plot_date = as.Date(format(DATE.12, "2001-%m-%d")))
+
+# plot with all together
+ggplot(all_dates, aes(plot_date, Site, fill = Type)) +
+  geom_tile(height = 0.85) +
+  facet_grid(year ~ ., scales = "free_y", space = "free_y", switch = "y") +
+  scale_fill_manual(values = c(Observed = "cornflowerblue", NoData = "grey", Missing = "red"),
+                    drop = FALSE) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b", expand = c(0, 0)) +
+  labs(title = "Observed and missing nights for all years", x = NULL, y = NULL, fill = NULL) +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+
+# separate plots for years
+
+plot_year <- function(y, data = all_dates) {
+  d <- data %>% filter(year == y)
+  
+  ggplot(d, aes(x = DATE.12, y = Site, color = Type)) +
+    geom_point(size = 2) +
+    scale_color_manual(values = c(Observed = "green4", NoData = "darkgrey", Missing = "red"),
+                       drop = FALSE) +
+    scale_x_date(limits = as.Date(c(paste0(y, "-01-01"), paste0(y, "-12-31"))),
+                 date_breaks = "1 month", date_labels = "%b",
+                 expand = expansion(mult = 0.01)) +
+    scale_y_discrete(expand = expansion(mult = c(0.01, 0.01))) +
+    labs(title = paste("Observed and Missing Dates for", y),
+         x = NULL, y = NULL, color = NULL) +
+    theme_minimal()
+}
+
+plot_year(2024)
+
+
+# more nights are nobats, have to make a new nobats file to get the correct 
+
+
+missing_nights <- all_dates %>%
+  filter(Type == "Missing") %>%
+  select(year, Site, DATE.12) %>%
+  arrange(year, Site, DATE.12)
+
+write.csv(missing_nights, "missing_nights_for_correction.csv")
+
+# fixed the nobats files with new dates format=date.12 and time +-1h
+
+
+
+
+
+
 
 
 
@@ -956,6 +1211,22 @@ n_distinct(cm_night24$filename)
 n_distinct(cm24_missing$filename)
 
 
+## winter infobox-----------
+
+pnat_winter <- cmw %>%
+  filter(DATE >= "2025-12-01" & DATE <= "2026-02-28",
+         id == "PNAT") %>% 
+  mutate(minute = floor_date(datetime, "minute"))%>%
+  distinct(minute, .keep_all = TRUE)
+
+pnat_winter %>%
+  count(Site, sort = TRUE)
+
+pnat_winter %>%
+  filter(Site == "CM-03")
+
+this <- print(pnat_winter %>% filter(Site == "CM-03"), n = Inf)
+
 # Finding out what should be match ratios based on manual data----------------
  # some code from Judith's MS thesis, but based on minutes and improved
 ## Spring dataset -------------
@@ -1545,3 +1816,6 @@ f %>% group_by(ratio_bin) %>%
 # among the mixed files only: do they still contain PPYG?
 f %>% filter(mixed) %>% group_by(ratio_bin) %>%
   summarise(files = n(), pct_with_ppyg = round(100 * mean(has_ppyg), 1))
+
+
+
